@@ -2,8 +2,8 @@
   --bg: #f4f6fb;
   --fg: #101828;
   --fg-muted: #4b5563;
-  --surface: rgba(255, 255, 255, 0.7);
-  --surface-border: rgba(255, 255, 255, 0.5);
+  --surface: #ffffff;
+  --surface-border: rgba(16, 24, 40, 0.1);
   --accent-a: #3b82f6; /* ユーザーA: ブルー系 */
   --accent-a-soft: rgba(59, 130, 246, 0.22);
   --accent-b: #f97316; /* ユーザーB: オレンジ系 */
@@ -22,8 +22,8 @@
     --bg: #0b0f19;
     --fg: #f3f4f6;
     --fg-muted: #9ca3af;
-    --surface: rgba(20, 24, 38, 0.65);
-    --surface-border: rgba(255, 255, 255, 0.08);
+    --surface: #171c2c;
+    --surface-border: rgba(255, 255, 255, 0.1);
     --accent-a: #60a5fa;
     --accent-a-soft: rgba(96, 165, 250, 0.25);
     --accent-b: #fb923c;
@@ -91,8 +91,6 @@ button {
   border: 1px solid var(--surface-border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-soft);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
 }
 
 /* ---------- create form ---------- */
