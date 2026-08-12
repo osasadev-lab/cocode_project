@@ -28,5 +28,6 @@ Thumbs.db
 web/AGENTS.md
 web/CLAUDE.md
 
-# Firebase CLI debug output
+# Firebase CLI debug output and local deploy cache
 firebase-debug.log
+web/.firebase/

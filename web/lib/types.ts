@@ -78,10 +78,3 @@ export type InboundMessage =
   | InboundRoleEvent
   | InboundReasonEvent
   | InboundErrorEvent;
-
-// A single point recorded for the client-side-only route trail (spec §5.4:
-// never persisted server-side, purely for the current page's lifetime).
-export interface TrailPoint {
-  lat: number;
-  lng: number;
-}

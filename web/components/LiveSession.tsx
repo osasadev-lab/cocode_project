@@ -4,11 +4,11 @@ import { useEffect, useState } from "react";
 import { MapView } from "./MapView";
 import { CountdownBadge } from "./CountdownBadge";
 import { StatusCard } from "./StatusCard";
-import { EndedModal } from "./EndedModal";
+import { SessionEndedScreen } from "./SessionEndedScreen";
+import { NotFoundScreen } from "./NotFoundScreen";
 import { ShareLinkCard } from "./ShareLinkCard";
 import { useCocodeSocket } from "@/lib/useCocodeSocket";
 import { useLiveLocation, type GeoPoint } from "@/lib/geolocation";
-import { useTrail } from "@/lib/useTrail";
 import { endSession } from "@/lib/api";
 import { clearSession } from "@/lib/storage";
 import type { LocationState } from "@/lib/types";
@@ -29,13 +29,10 @@ function toLocationState(p: GeoPoint | null): LocationState | null {
 export function LiveSession({ sessionId, token, shareUrl }: LiveSessionProps) {
   const socket = useCocodeSocket(sessionId, token);
   const { point: myPoint } = useLiveLocation(true);
-  const [pickingTarget, setPickingTarget] = useState(false);
   const [ending, setEnding] = useState(false);
   const [localEnded, setLocalEnded] = useState(false);
-  // A's own re-picked meeting point, shown immediately without waiting for
-  // a round trip — the hub only broadcasts target updates to B (spec §7),
-  // so A's own screen would otherwise never reflect a re-pick.
-  const [myTargetOverride, setMyTargetOverride] = useState<LocationState | null>(null);
+  const [confirmingEnd, setConfirmingEnd] = useState(false);
+  const [endError, setEndError] = useState<string | null>(null);
 
   // Resend our current fix whenever it changes AND whenever the socket
   // (re)opens, so a fix obtained before the handshake finished isn't lost.
@@ -48,30 +45,31 @@ export function LiveSession({ sessionId, token, shareUrl }: LiveSessionProps) {
   const myLive = toLocationState(myPoint);
   const liveA = socket.role === "a" ? myLive : socket.liveA;
   const liveB = socket.role === "b" ? myLive : socket.liveB;
-  const target = socket.role === "a" ? (myTargetOverride ?? socket.target) : socket.target;
-
-  const trailA = useTrail(liveA);
-  const trailB = useTrail(liveB);
-
-  function handlePickTarget(lat: number, lng: number) {
-    const point: GeoPoint = { lat, lng, accuracy: 0 };
-    socket.sendLocationUpdate("target", point);
-    setMyTargetOverride({ lat, lng, updatedAt: new Date().toISOString() });
-    setPickingTarget(false);
-  }
+  const target = socket.target;
 
   async function handleEnd() {
     setEnding(true);
+    setEndError(null);
     try {
       await endSession(sessionId, token);
       clearSession();
       setLocalEnded(true);
-    } catch {
+    } catch (e) {
       setEnding(false);
+      setEndError(e instanceof Error ? e.message : "共有の終了に失敗しました。時間をおいて再度お試しください。");
     }
   }
 
   const ended = localEnded ? { kind: "manual" as const } : socket.ended ? { kind: socket.ended.kind } : null;
+
+  // Once the session is over there's nothing left to show on the map, so
+  // each side gets its own dedicated full screen instead of a modal over a
+  // dead map: A (who has the context of having shared/ended it) sees a
+  // proper "ended" screen, B (who only ever held a link) sees a plain
+  // not-found — same treatment a dead link gets anywhere else.
+  if (ended) {
+    return socket.role === "a" ? <SessionEndedScreen reason={ended.kind} /> : <NotFoundScreen />;
+  }
 
   const peerLabel = socket.role === "a" ? "ユーザーB" : "ユーザーA";
   const peerLastUpdated = socket.role === "a" ? socket.liveB?.updatedAt : socket.liveA?.updatedAt;
@@ -79,18 +77,10 @@ export function LiveSession({ sessionId, token, shareUrl }: LiveSessionProps) {
 
   return (
     <div className="cocode-screen">
-      <MapView
-        target={target}
-        liveA={liveA}
-        liveB={liveB}
-        trailA={trailA}
-        trailB={trailB}
-        pickingTarget={pickingTarget}
-        onPickTarget={handlePickTarget}
-      />
+      <MapView target={target} liveA={liveA} liveB={liveB} />
 
       <div className="cocode-topbar">
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div className="cocode-topbar-cards">
           <StatusCard peerLabel={peerLabel} online={socket.peerOnline} lastUpdatedAt={peerLastUpdated} />
           {showShareCard && <ShareLinkCard shareUrl={shareUrl!} />}
         </div>
@@ -110,20 +100,11 @@ export function LiveSession({ sessionId, token, shareUrl }: LiveSessionProps) {
         </div>
 
         <div className="cocode-fab-group">
-          {socket.role === "a" && (
-            <button
-              className="cocode-fab cocode-fab-primary"
-              title="待ち合わせ地点を再設定"
-              onClick={() => setPickingTarget((v) => !v)}
-            >
-              {pickingTarget ? "✕" : "📍"}
-            </button>
-          )}
           <button
             className="cocode-fab"
             style={{ background: "var(--danger)", color: "white" }}
             title="共有を終了"
-            onClick={handleEnd}
+            onClick={() => setConfirmingEnd(true)}
             disabled={ending}
           >
             ⏹
@@ -131,7 +112,31 @@ export function LiveSession({ sessionId, token, shareUrl }: LiveSessionProps) {
         </div>
       </div>
 
-      {ended && <EndedModal reason={ended.kind} />}
+      {confirmingEnd && (
+        <div className="cocode-modal-backdrop">
+          <div className="cocode-glass cocode-modal">
+            <div className="cocode-modal-icon">⏹</div>
+            <p className="cocode-modal-title">共有を終了しますか?</p>
+            <p className="cocode-modal-body">
+              終了すると、{peerLabel}との位置共有がすぐに終わります。この操作は取り消せません。
+            </p>
+            {endError && <p className="cocode-error">{endError}</p>}
+            <button className="cocode-btn cocode-btn-primary" onClick={handleEnd} disabled={ending}>
+              {ending ? "終了中…" : "終了する"}
+            </button>
+            <button
+              className="cocode-btn cocode-btn-secondary"
+              onClick={() => {
+                setConfirmingEnd(false);
+                setEndError(null);
+              }}
+              disabled={ending}
+            >
+              キャンセル
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

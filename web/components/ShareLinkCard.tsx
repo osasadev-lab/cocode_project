@@ -11,6 +11,7 @@ export function ShareLinkCard({ shareUrl }: ShareLinkCardProps) {
   const [copied, setCopied] = useState(false);
 
   async function copy() {
+    window.alert("共有リンクを知っている人は誰でもお互いの位置情報を見ることができます。信頼できる相手にのみ送ってください。");
     try {
       await navigator.clipboard.writeText(shareUrl);
       setCopied(true);
@@ -23,8 +24,8 @@ export function ShareLinkCard({ shareUrl }: ShareLinkCardProps) {
 
   return (
     <div className="cocode-glass cocode-share-box" style={{ maxWidth: 320 }}>
-      <strong style={{ fontSize: 13 }}>ユーザーBを招待</strong>
-      <div className="cocode-share-url">{shareUrl}</div>
+      <strong style={{ fontSize: 13 }}>友達を招待</strong>
+      <div className="cocode-share-url" title={shareUrl}>{shareUrl}</div>
       <button className="cocode-btn cocode-btn-secondary" onClick={copy}>
         {copied ? "コピーしました ✓" : "リンクをコピー"}
       </button>

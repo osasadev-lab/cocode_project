@@ -1,20 +1,23 @@
 "use client";
 
-interface EndedModalProps {
+interface SessionEndedScreenProps {
   reason: "manual" | "ttl";
 }
 
-/** Shown on session_ended/session_expired (spec §5.5/§9): always tells the
- * user what happened and what to do next, since the TTL never extends. */
-export function EndedModal({ reason }: EndedModalProps) {
-  const title = reason === "manual" ? "共有が終了しました" : "セッションの有効期限が切れました";
+/**
+ * A's full-screen destination once the session ends (spec §5.5/§9) — a
+ * dedicated screen rather than a modal over the map, since there's nothing
+ * left to show on the map at that point.
+ */
+export function SessionEndedScreen({ reason }: SessionEndedScreenProps) {
+  const title = reason === "manual" ? "共有を終了しました" : "セッションの有効期限が切れました";
   const body =
     reason === "manual"
-      ? "どちらかが共有を終了しました。もう一度待ち合わせを共有するには、新しく共有リンクを発行してください。"
+      ? "位置共有を終了しました。もう一度待ち合わせを共有するには、新しく共有リンクを発行してください。"
       : "このセッションは作成から30分で自動的に終了する設計です。待ち合わせが続く場合は、新しく共有リンクを発行してください。";
 
   return (
-    <div className="cocode-modal-backdrop">
+    <div className="cocode-center-shell">
       <div className="cocode-glass cocode-modal">
         <div className="cocode-modal-icon">{reason === "manual" ? "👋" : "⏰"}</div>
         <p className="cocode-modal-title">{title}</p>

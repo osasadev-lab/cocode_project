@@ -112,6 +112,12 @@ button {
   letter-spacing: -0.02em;
 }
 
+.cocode-picking-card {
+  width: min(340px, 100%);
+  padding: 16px 18px;
+  gap: 12px;
+}
+
 .cocode-brand-dot {
   width: 10px;
   height: 10px;
@@ -196,12 +202,13 @@ button {
   gap: 10px;
   padding: 14px;
   border-radius: var(--radius-md);
-  background: rgba(127, 127, 127, 0.08);
 }
 
 .cocode-share-url {
   font-size: 12.5px;
-  word-break: break-all;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   color: var(--fg-muted);
 }
@@ -278,6 +285,7 @@ button {
   left: 16px;
   right: 16px;
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
@@ -287,6 +295,14 @@ button {
 
 .cocode-topbar > * {
   pointer-events: auto;
+}
+
+.cocode-topbar-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1 1 260px;
+  min-width: 0;
 }
 
 .cocode-status-card {
@@ -328,6 +344,7 @@ button {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-shrink: 0;
   transition: color 0.2s ease;
 }
 

@@ -3,53 +3,79 @@
 import { useEffect, useRef } from "react";
 import maplibregl, { type LngLatLike } from "maplibre-gl";
 import { MAP_STYLE_URL } from "@/lib/config";
-import type { LocationState, TrailPoint } from "@/lib/types";
+import { fetchWalkingRoute } from "@/lib/routing";
+import type { LocationState } from "@/lib/types";
 
 interface MapViewProps {
   target: LocationState | null;
   liveA: LocationState | null;
   liveB: LocationState | null;
-  trailA: TrailPoint[];
-  trailB: TrailPoint[];
   /** When true, tapping the map reports the coordinate via onPickTarget
    * instead of just panning (used while A is choosing the meeting point). */
   pickingTarget?: boolean;
   onPickTarget?: (lat: number, lng: number) => void;
 }
 
-const SOURCE_TRAIL_A = "cocode-trail-a";
-const SOURCE_TRAIL_B = "cocode-trail-b";
+const SOURCE_ROUTE_A = "cocode-route-a";
+const SOURCE_ROUTE_B = "cocode-route-b";
 
 function emptyLine(): GeoJSON.Feature<GeoJSON.LineString> {
   return { type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: [] } };
 }
 
-function lineFromTrail(trail: TrailPoint[]): GeoJSON.Feature<GeoJSON.LineString> {
-  return {
-    type: "Feature",
-    properties: {},
-    geometry: { type: "LineString", coordinates: trail.map((p) => [p.lng, p.lat]) },
+function lineFromCoords(coords: [number, number][]): GeoJSON.Feature<GeoJSON.LineString> {
+  return { type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } };
+}
+
+// De-dupes walking-route requests for one participant's line: skips
+// re-fetching when neither endpoint moved, and cancels/ignores a
+// still-in-flight request when a newer one supersedes it (fetch order isn't
+// guaranteed to match response order). No debounce — GPS updates are
+// already throttled upstream (LIVE_UPDATE_MIN_DISTANCE_M/MS).
+function createRouteUpdater(setLine: (coords: [number, number][]) => void) {
+  let lastKey = "";
+  let requestId = 0;
+  let abortController: AbortController | null = null;
+
+  return function update(from: LocationState | null, to: LocationState | null) {
+    if (!from || !to) {
+      lastKey = "";
+      abortController?.abort();
+      setLine([]);
+      return;
+    }
+    const key = `${from.lat},${from.lng}|${to.lat},${to.lng}`;
+    if (key === lastKey) return;
+    lastKey = key;
+
+    const thisRequestId = ++requestId;
+    abortController?.abort();
+    const controller = new AbortController();
+    abortController = controller;
+    fetchWalkingRoute(from, to, controller.signal).then((coords) => {
+      if (thisRequestId !== requestId) return; // superseded — drop this result
+      if (coords) setLine(coords);
+    });
   };
 }
 
-export function MapView({
-  target,
-  liveA,
-  liveB,
-  trailA,
-  trailB,
-  pickingTarget,
-  onPickTarget,
-}: MapViewProps) {
+export function MapView({ target, liveA, liveB, pickingTarget, onPickTarget }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
-  const readyRef = useRef(false);
   const targetMarkerRef = useRef<maplibregl.Marker | null>(null);
   const liveAMarkerRef = useRef<maplibregl.Marker | null>(null);
   const liveBMarkerRef = useRef<maplibregl.Marker | null>(null);
   const hasFitRef = useRef(false);
   const onPickTargetRef = useRef(onPickTarget);
   onPickTargetRef.current = onPickTarget;
+  const updateRouteARef = useRef<ReturnType<typeof createRouteUpdater> | null>(null);
+  const updateRouteBRef = useRef<ReturnType<typeof createRouteUpdater> | null>(null);
+  // Tracks the latest props so route-layer setup (which may be delayed —
+  // see below) can immediately fetch with whatever's already known, since
+  // the props effect further down may have already run and no-op'd while
+  // updateRouteARef/B were still null.
+  const latestPropsRef = useRef({ target, liveA, liveB });
+  latestPropsRef.current = { target, liveA, liveB };
 
   // Map instance: created once and torn down on unmount.
   useEffect(() => {
@@ -64,25 +90,52 @@ export function MapView({
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
     map.addControl(new maplibregl.AttributionControl({ compact: true }));
 
-    map.on("load", () => {
-      map.addSource(SOURCE_TRAIL_A, { type: "geojson", data: emptyLine() });
-      map.addSource(SOURCE_TRAIL_B, { type: "geojson", data: emptyLine() });
+    // Retries on "styledata" instead of waiting for "load": this MapTiler
+    // style never fires "load" (it references at least one sprite icon,
+    // "office", that 404s — MapLibre's isStyleLoaded() seems to stay false
+    // forever because of it, even though the style is otherwise fully
+    // usable), but calling addSource too early throws, so poll readiness
+    // via the exception instead of a boolean check.
+    function setUpRouteLayers() {
+      try {
+        map.addSource(SOURCE_ROUTE_A, { type: "geojson", data: emptyLine() });
+        map.addSource(SOURCE_ROUTE_B, { type: "geojson", data: emptyLine() });
+      } catch {
+        return false;
+      }
+      // Dashed to read as a route hint rather than an authoritative path —
+      // it's a walking route from a free, best-effort routing service.
       map.addLayer({
-        id: "cocode-trail-a-line",
+        id: "cocode-route-a-line",
         type: "line",
-        source: SOURCE_TRAIL_A,
-        paint: { "line-color": "#3b82f6", "line-width": 3, "line-opacity": 0.55 },
+        source: SOURCE_ROUTE_A,
+        paint: { "line-color": "#3b82f6", "line-width": 3, "line-opacity": 0.65, "line-dasharray": [2, 2] },
         layout: { "line-cap": "round", "line-join": "round" },
       });
       map.addLayer({
-        id: "cocode-trail-b-line",
+        id: "cocode-route-b-line",
         type: "line",
-        source: SOURCE_TRAIL_B,
-        paint: { "line-color": "#f97316", "line-width": 3, "line-opacity": 0.55 },
+        source: SOURCE_ROUTE_B,
+        paint: { "line-color": "#f97316", "line-width": 3, "line-opacity": 0.65, "line-dasharray": [2, 2] },
         layout: { "line-cap": "round", "line-join": "round" },
       });
-      readyRef.current = true;
-    });
+      updateRouteARef.current = createRouteUpdater((coords) => {
+        (map.getSource(SOURCE_ROUTE_A) as maplibregl.GeoJSONSource | undefined)?.setData(lineFromCoords(coords));
+      });
+      updateRouteBRef.current = createRouteUpdater((coords) => {
+        (map.getSource(SOURCE_ROUTE_B) as maplibregl.GeoJSONSource | undefined)?.setData(lineFromCoords(coords));
+      });
+      const { target: t, liveA: a, liveB: b } = latestPropsRef.current;
+      updateRouteARef.current(a, t);
+      updateRouteBRef.current(b, t);
+      return true;
+    }
+    if (!setUpRouteLayers()) {
+      const onStyleData = () => {
+        if (setUpRouteLayers()) map.off("styledata", onStyleData);
+      };
+      map.on("styledata", onStyleData);
+    }
 
     map.on("click", (e) => {
       onPickTargetRef.current?.(e.lngLat.lat, e.lngLat.lng);
@@ -92,7 +145,8 @@ export function MapView({
     return () => {
       map.remove();
       mapRef.current = null;
-      readyRef.current = false;
+      updateRouteARef.current = null;
+      updateRouteBRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -141,12 +195,8 @@ export function MapView({
       liveAMarkerRef.current.setLngLat([liveA.lng, liveA.lat]).addTo(map);
       maybeFitBounds(map);
     }
-    if (readyRef.current) {
-      const src = map.getSource(SOURCE_TRAIL_A) as maplibregl.GeoJSONSource | undefined;
-      src?.setData(lineFromTrail(trailA));
-    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveA, trailA]);
+  }, [liveA]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -160,12 +210,17 @@ export function MapView({
       liveBMarkerRef.current.setLngLat([liveB.lng, liveB.lat]).addTo(map);
       maybeFitBounds(map);
     }
-    if (readyRef.current) {
-      const src = map.getSource(SOURCE_TRAIL_B) as maplibregl.GeoJSONSource | undefined;
-      src?.setData(lineFromTrail(trailB));
-    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveB, trailB]);
+  }, [liveB]);
+
+  // Walking route from each participant's live position to the meeting
+  // point (spec update: replaces the old movement-trail lines). v1 is
+  // walking-only; a later version is expected to add driving/transit as a
+  // user-chosen profile.
+  useEffect(() => {
+    updateRouteARef.current?.(liveA, target);
+    updateRouteBRef.current?.(liveB, target);
+  }, [liveA, liveB, target]);
 
   return (
     <div ref={containerRef} className={`cocode-map${pickingTarget ? " cocode-map-picking" : ""}`} />

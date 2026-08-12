@@ -11,12 +11,20 @@ interface CreateFormProps {
   onCreated: (sessionId: string, token: string, shareUrl: string) => void;
 }
 
+type Step = "choose" | "picking";
+
 /**
  * A's entry screen. The meeting point must be chosen here, before a
  * session (and therefore a share link) exists at all — spec §5.1/§5.2/§10-4
  * deliberately forbid issuing a link with no meeting point set yet.
+ *
+ * Flow: a blocking "choose" modal picks the method first (current location
+ * vs. tapping the map), then a small non-blocking card takes over so the
+ * map stays fully tappable — repeated taps just move the pin instead of
+ * re-triggering a modal every time.
  */
 export function CreateForm({ onCreated }: CreateFormProps) {
+  const [step, setStep] = useState<Step>("choose");
   const [point, setPoint] = useState<{ lat: number; lng: number } | null>(null);
   const [locating, setLocating] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -28,11 +36,23 @@ export function CreateForm({ onCreated }: CreateFormProps) {
     try {
       const p = await getCurrentPosition();
       setPoint({ lat: p.lat, lng: p.lng });
+      setStep("picking");
     } catch (e) {
       setError(e instanceof Error ? e.message : "現在地を取得できませんでした");
     } finally {
       setLocating(false);
     }
+  }
+
+  function chooseFromMap() {
+    setError(null);
+    setStep("picking");
+  }
+
+  function reselect() {
+    setPoint(null);
+    setError(null);
+    setStep("choose");
   }
 
   async function confirm() {
@@ -64,45 +84,54 @@ export function CreateForm({ onCreated }: CreateFormProps) {
         target={previewTarget}
         liveA={null}
         liveB={null}
-        trailA={[]}
-        trailB={[]}
-        pickingTarget
+        pickingTarget={step === "picking"}
         onPickTarget={(lat, lng) => setPoint({ lat, lng })}
       />
 
-      <div className="cocode-topbar">
-        <div className="cocode-glass cocode-form-card">
-          <div className="cocode-brand">
-            <span className="cocode-brand-dot" />
-            cocode
+      {step === "choose" ? (
+        <div className="cocode-modal-backdrop">
+          <div className="cocode-glass cocode-form-card">
+            <div className="cocode-brand">
+              <span className="cocode-brand-dot" />
+              cocode
+            </div>
+            <p className="cocode-subtitle">待ち合わせ場所を決めましょう。方法を選んでください。</p>
+
+            <button className="cocode-btn cocode-btn-secondary" onClick={useCurrentLocation} disabled={locating}>
+              {locating ? "取得中…" : "📍 現在地を使う"}
+            </button>
+            <button className="cocode-btn cocode-btn-secondary" onClick={chooseFromMap} disabled={locating}>
+              🗺️ 地図から選択する
+            </button>
+
+            {error && <p className="cocode-error">{error}</p>}
           </div>
-          <p className="cocode-subtitle">
-            待ち合わせ場所を決めましょう。現在地を使うか、地図をタップして地点を指定してください。
-          </p>
-
-          <button className="cocode-btn cocode-btn-secondary" onClick={useCurrentLocation} disabled={locating}>
-            {locating ? "取得中…" : "📍 現在地を使う"}
-          </button>
-
-          {point && (
-            <>
-              <hr className="cocode-divider" />
+        </div>
+      ) : (
+        <div className="cocode-topbar">
+          <div className="cocode-glass cocode-form-card cocode-picking-card">
+            {point ? (
               <p className="cocode-hint">
                 地点を選択しました({point.lat.toFixed(5)}, {point.lng.toFixed(5)})。この場所を待ち合わせ地点として共有を開始します。
               </p>
+            ) : (
+              <p className="cocode-hint">地図をタップして待ち合わせ地点を指定してください。</p>
+            )}
+
+            {point && (
               <button className="cocode-btn cocode-btn-primary" onClick={confirm} disabled={creating}>
                 {creating ? "作成中…" : "この地点で共有リンクを作成"}
               </button>
-            </>
-          )}
+            )}
 
-          {error && <p className="cocode-error">{error}</p>}
+            <button className="cocode-btn cocode-btn-secondary" onClick={reselect} disabled={creating}>
+              選びなおす
+            </button>
 
-          <p className="cocode-hint">
-            共有リンクを知っている人は誰でもお互いの位置情報を見ることができます。信頼できる相手にのみ送ってください。
-          </p>
+            {error && <p className="cocode-error">{error}</p>}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
