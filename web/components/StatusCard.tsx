@@ -1,0 +1,32 @@
+"use client";
+
+interface StatusCardProps {
+  peerLabel: string;
+  online: boolean;
+  lastUpdatedAt?: string;
+}
+
+function formatRelative(iso?: string): string {
+  if (!iso) return "まだ位置情報がありません";
+  const seconds = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 1000));
+  if (seconds < 5) return "たった今更新";
+  if (seconds < 60) return `${seconds}秒前に更新`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}分前に更新`;
+}
+
+/** Peer presence card (spec §9: "相手の状態(オンライン/最終更新時刻)を表示"). */
+export function StatusCard({ peerLabel, online, lastUpdatedAt }: StatusCardProps) {
+  return (
+    <div className="cocode-glass cocode-status-card">
+      <div className="cocode-status-row">
+        <span className={`cocode-status-dot ${online ? "cocode-status-dot-online" : "cocode-status-dot-offline"}`} />
+        <strong>{peerLabel}</strong>
+        <span style={{ color: "var(--fg-muted)" }}>{online ? "オンライン" : "オフライン"}</span>
+      </div>
+      <div className="cocode-status-row" style={{ color: "var(--fg-muted)" }}>
+        {formatRelative(lastUpdatedAt)}
+      </div>
+    </div>
+  );
+}

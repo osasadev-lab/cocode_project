@@ -1,0 +1,25 @@
+# Go
+server/cocode-server
+server/*.exe
+server/tmp/
+
+# Node / Next.js
+web/node_modules/
+web/.next/
+web/out/
+web/.env.local
+web/.env*.local
+web/*.tsbuildinfo
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
