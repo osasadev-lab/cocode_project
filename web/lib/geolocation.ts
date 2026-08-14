@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { LIVE_UPDATE_MIN_DISTANCE_M, LIVE_UPDATE_MIN_INTERVAL_MS } from "./config";
 
+// GeoPoint: 緯度経度に精度（メートル）を添えた1点の位置情報。
 export interface GeoPoint {
   lat: number;
   lng: number;
   accuracy: number;
 }
 
-/** One-shot current-position lookup for the "現在地を使う" button. */
+/** One-shot current-position lookup for the "現在地を使う" button.
+ * 「現在地を使う」ボタン用に、現在位置を1回だけ取得する。 */
 export function getCurrentPosition(): Promise<GeoPoint> {
   return new Promise((resolve, reject) => {
     if (!("geolocation" in navigator)) {
@@ -27,6 +29,7 @@ export function getCurrentPosition(): Promise<GeoPoint> {
   });
 }
 
+// haversineMeters は2点間の距離をハーバーサイン公式で概算する（メートル単位）。
 function haversineMeters(a: GeoPoint, b: GeoPoint): number {
   const R = 6371000;
   const toRad = (d: number) => (d * Math.PI) / 180;
@@ -43,10 +46,16 @@ function haversineMeters(a: GeoPoint, b: GeoPoint): number {
  * every fix, throttled so a subsequent update is only surfaced once the
  * device has moved far enough or enough time has passed — this is the
  * knob that keeps battery and WebSocket traffic reasonable.
+ *
+ * ブラウザの GPS 位置を継続的に監視し（仕様書§5.3）、取得結果を返す。
+ * 端末が一定距離以上移動する、または一定時間以上経過するまでは
+ * 新しい値を反映しないようスロットリングしており、これがバッテリー消費と
+ * WebSocket の通信量を抑えるための調整点になっている。
  */
 export function useLiveLocation(enabled: boolean) {
   const [point, setPoint] = useState<GeoPoint | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // 直近で採用（＝呼び出し元に反映）した位置と、その時刻を保持する。
   const lastSent = useRef<{ point: GeoPoint; at: number } | null>(null);
 
   useEffect(() => {
@@ -64,6 +73,7 @@ export function useLiveLocation(enabled: boolean) {
           accuracy: pos.coords.accuracy,
         };
 
+        // 前回採用した位置から「十分離れた」か「十分時間が経った」場合のみ反映する。
         const prev = lastSent.current;
         const now = Date.now();
         const farEnough = !prev || haversineMeters(prev.point, next) >= LIVE_UPDATE_MIN_DISTANCE_M;
@@ -79,6 +89,7 @@ export function useLiveLocation(enabled: boolean) {
       { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
     );
 
+    // クリーンアップ: 監視を停止する。
     return () => navigator.geolocation.clearWatch(watchId);
   }, [enabled]);
 

@@ -6,6 +6,8 @@ interface StatusCardProps {
   lastUpdatedAt?: string;
 }
 
+// formatRelative は最終更新時刻（ISO文字列）を「◯分前に更新」のような
+// 相対時間表示に変換する。
 function formatRelative(iso?: string): string {
   if (!iso) return "まだ位置情報がありません";
   const seconds = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 1000));
@@ -15,7 +17,8 @@ function formatRelative(iso?: string): string {
   return `${minutes}分前に更新`;
 }
 
-/** Peer presence card (spec §9: "相手の状態(オンライン/最終更新時刻)を表示"). */
+/** Peer presence card (spec §9: "相手の状態(オンライン/最終更新時刻)を表示").
+ * 相手のオンライン状態・最終更新時刻を表示するカード（仕様書§9）。 */
 export function StatusCard({ peerLabel, online, lastUpdatedAt }: StatusCardProps) {
   return (
     <div className="cocode-glass cocode-status-card">

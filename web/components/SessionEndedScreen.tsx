@@ -8,6 +8,10 @@ interface SessionEndedScreenProps {
  * A's full-screen destination once the session ends (spec §5.5/§9) — a
  * dedicated screen rather than a modal over the map, since there's nothing
  * left to show on the map at that point.
+ *
+ * セッション終了後に A が到達する全画面表示（仕様書§5.5/§9）。
+ * その時点で地図に表示すべきものが無いため、地図の上のモーダルではなく
+ * 専用画面としている。
  */
 export function SessionEndedScreen({ reason }: SessionEndedScreenProps) {
   const title = reason === "manual" ? "共有を終了しました" : "セッションの有効期限が切れました";

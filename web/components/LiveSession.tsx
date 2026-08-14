@@ -21,11 +21,14 @@ interface LiveSessionProps {
   shareUrl?: string;
 }
 
+// toLocationState は GeoPoint（ブラウザの Geolocation API 由来）を
+// サーバーとやり取りする LocationState 形式へ変換する。
 function toLocationState(p: GeoPoint | null): LocationState | null {
   if (!p) return null;
   return { lat: p.lat, lng: p.lng, accuracy: p.accuracy, updatedAt: new Date().toISOString() };
 }
 
+// LiveSession: セッション参加中（地図・相手の状態・終了操作）のメイン画面。
 export function LiveSession({ sessionId, token, shareUrl }: LiveSessionProps) {
   const socket = useCocodeSocket(sessionId, token);
   const { point: myPoint } = useLiveLocation(true);
@@ -36,17 +39,23 @@ export function LiveSession({ sessionId, token, shareUrl }: LiveSessionProps) {
 
   // Resend our current fix whenever it changes AND whenever the socket
   // (re)opens, so a fix obtained before the handshake finished isn't lost.
+  // 自分の位置が変化した時、および WebSocket が（再）接続した時の両方で
+  // 現在の位置を送り直す。これにより、認証ハンドシェイク完了前に取得した
+  // 位置情報が失われないようにする。
   useEffect(() => {
     if (!myPoint || socket.status !== "open") return;
     socket.sendLocationUpdate("live", myPoint);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [myPoint, socket.status]);
 
+  // 自分の役割に応じて、自分の位置は myLive を、相手の位置は socket 経由の
+  // 値を採用する（自分の位置はサーバーの反響を待たず即座に表示するため）。
   const myLive = toLocationState(myPoint);
   const liveA = socket.role === "a" ? myLive : socket.liveA;
   const liveB = socket.role === "b" ? myLive : socket.liveB;
   const target = socket.target;
 
+  // handleEnd: 「終了する」確定時、セッションを終了させローカル状態を掃除する。
   async function handleEnd() {
     setEnding(true);
     setEndError(null);
@@ -67,6 +76,10 @@ export function LiveSession({ sessionId, token, shareUrl }: LiveSessionProps) {
   // dead map: A (who has the context of having shared/ended it) sees a
   // proper "ended" screen, B (who only ever held a link) sees a plain
   // not-found — same treatment a dead link gets anywhere else.
+  // セッション終了後は地図に表示すべきものが何も無いため、死んだ地図の上に
+  // モーダルを重ねるのではなく、それぞれ専用の全画面表示に切り替える。
+  // A（自分が共有・終了した経緯を知っている）には正式な「終了しました」画面を、
+  // B（リンクしか持っていない）には他の失効リンクと同様の404画面を見せる。
   if (ended) {
     return socket.role === "a" ? <SessionEndedScreen reason={ended.kind} /> : <NotFoundScreen />;
   }

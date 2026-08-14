@@ -6,10 +6,12 @@ interface ShareLinkCardProps {
   shareUrl: string;
 }
 
-/** A's share-link reminder, shown until B joins (spec §2/§5.1). */
+/** A's share-link reminder, shown until B joins (spec §2/§5.1).
+ * B が参加するまで表示され続ける、A 向けの共有リンク表示カード（仕様書§2/§5.1）。 */
 export function ShareLinkCard({ shareUrl }: ShareLinkCardProps) {
   const [copied, setCopied] = useState(false);
 
+  // copy: 注意喚起のアラートを出した上で、共有リンクをクリップボードへコピーする。
   async function copy() {
     window.alert("共有リンクを知っている人は誰でもお互いの位置情報を見ることができます。信頼できる相手にのみ送ってください。");
     try {

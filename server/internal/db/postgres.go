@@ -1,6 +1,9 @@
 // Package db implements session.Store against Supabase Postgres. It is the
 // only package that imports a database driver; every other package talks
 // to sessions through the session.Store interface.
+// db パッケージは session.Store を Supabase Postgres 上に実装する。
+// データベースドライバに依存するのはこのパッケージのみで、
+// 他のパッケージは session.Store インターフェース越しにしかセッションへアクセスしない。
 package db
 
 import (
@@ -16,6 +19,7 @@ import (
 	"github.com/osasadev-lab/cocode_project/server/internal/session"
 )
 
+// sessions テーブルの定義。存在しなければ Open() 時に自動で作成される。
 const schemaDDL = `
 create table if not exists sessions (
   id           uuid primary key default gen_random_uuid(),
@@ -30,6 +34,7 @@ create table if not exists sessions (
 `
 
 // Postgres is a session.Store backed by Supabase.
+// Postgres は Supabase 上の Postgres を実体とする session.Store の実装。
 type Postgres struct {
 	db *sql.DB
 }
@@ -37,7 +42,10 @@ type Postgres struct {
 // Open connects to Postgres using a standard connection string
 // (e.g. Supabase's "connection pooling" URI) and ensures the sessions
 // table exists.
+// Open は接続文字列（Supabase のコネクションプーリング用 URI など）を使って
+// Postgres へ接続し、sessions テーブルが存在することを保証する。
 func Open(ctx context.Context, connString string) (*Postgres, error) {
+	// 接続をオープン（実際の TCP 接続はまだ確立しない）。
 	sqlDB, err := sql.Open("pgx", connString)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
@@ -45,6 +53,7 @@ func Open(ctx context.Context, connString string) (*Postgres, error) {
 	sqlDB.SetMaxOpenConns(5) // cocode runs as a single Cloud Run instance; keep the pool small
 	sqlDB.SetMaxIdleConns(5)
 
+	// 疎通確認（Ping）と、必要ならテーブル作成（マイグレーション）を行う。
 	if err := sqlDB.PingContext(ctx); err != nil {
 		return nil, fmt.Errorf("ping db: %w", err)
 	}
@@ -54,10 +63,13 @@ func Open(ctx context.Context, connString string) (*Postgres, error) {
 	return &Postgres{db: sqlDB}, nil
 }
 
+// Close はデータベース接続プールを閉じる。
 func (p *Postgres) Close() error {
 	return p.db.Close()
 }
 
+// Insert は新しいセッション行を作成し、DB が採番した id や created_at を
+// 含む完全なレコードを返す。
 func (p *Postgres) Insert(ctx context.Context, tokenA, tokenB string, ttl time.Duration, target session.LocationState) (*session.Record, error) {
 	targetJSON, err := json.Marshal(target)
 	if err != nil {
@@ -70,6 +82,7 @@ func (p *Postgres) Insert(ctx context.Context, tokenA, tokenB string, ttl time.D
 		LocATarget: target,
 	}
 
+	// expires_at は DB 側で now() + TTL として計算させ、時刻のズレを防ぐ。
 	const q = `
 		insert into sessions (token_a, token_b, expires_at, loc_a_target)
 		values ($1, $2, now() + $3::interval, $4)
@@ -82,6 +95,7 @@ func (p *Postgres) Insert(ctx context.Context, tokenA, tokenB string, ttl time.D
 	return rec, nil
 }
 
+// Get は id からセッションを取得する。存在しなければ session.ErrNotFound を返す。
 func (p *Postgres) Get(ctx context.Context, id string) (*session.Record, error) {
 	const q = `
 		select id, token_a, token_b, created_at, expires_at, loc_a_target, loc_a_live, loc_b_live
@@ -93,6 +107,7 @@ func (p *Postgres) Get(ctx context.Context, id string) (*session.Record, error) 
 	var targetJSON []byte
 	var liveAJSON, liveBJSON sql.NullString
 
+	// 行を読み取る。行が無ければ ErrNoRows を session.ErrNotFound に変換する。
 	if err := row.Scan(&rec.ID, &rec.TokenA, &rec.TokenB, &rec.CreatedAt, &rec.ExpiresAt, &targetJSON, &liveAJSON, &liveBJSON); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, session.ErrNotFound
@@ -100,26 +115,41 @@ func (p *Postgres) Get(ctx context.Context, id string) (*session.Record, error) 
 		return nil, fmt.Errorf("get session: %w", err)
 	}
 
+	// jsonb 列（目的地・A/Bのライブ位置）をそれぞれ Go の構造体へ変換する。
 	if err := json.Unmarshal(targetJSON, &rec.LocATarget); err != nil {
 		return nil, fmt.Errorf("unmarshal loc_a_target: %w", err)
 	}
-	if liveAJSON.Valid {
-		var loc session.LocationState
-		if err := json.Unmarshal([]byte(liveAJSON.String), &loc); err != nil {
-			return nil, fmt.Errorf("unmarshal loc_a_live: %w", err)
-		}
-		rec.LocALive = &loc
+	loc, err := unmarshalNullableLocation(liveAJSON, "loc_a_live")
+	if err != nil {
+		return nil, err
 	}
-	if liveBJSON.Valid {
-		var loc session.LocationState
-		if err := json.Unmarshal([]byte(liveBJSON.String), &loc); err != nil {
-			return nil, fmt.Errorf("unmarshal loc_b_live: %w", err)
-		}
-		rec.LocBLive = &loc
+	rec.LocALive = loc
+
+	loc, err = unmarshalNullableLocation(liveBJSON, "loc_b_live")
+	if err != nil {
+		return nil, err
 	}
+	rec.LocBLive = loc
+
 	return &rec, nil
 }
 
+// unmarshalNullableLocation decodes a nullable jsonb location column, returning
+// nil when the column is NULL. Shared by the loc_a_live/loc_b_live handling in Get.
+// unmarshalNullableLocation は NULL 許容の jsonb 位置情報カラムをデコードする。
+// カラムが NULL の場合は nil を返す。Get 内の loc_a_live / loc_b_live で共用する。
+func unmarshalNullableLocation(col sql.NullString, fieldName string) (*session.LocationState, error) {
+	if !col.Valid {
+		return nil, nil
+	}
+	var loc session.LocationState
+	if err := json.Unmarshal([]byte(col.String), &loc); err != nil {
+		return nil, fmt.Errorf("unmarshal %s: %w", fieldName, err)
+	}
+	return &loc, nil
+}
+
+// UpdateLocation は role/kind に対応する位置情報カラムを上書きする。
 func (p *Postgres) UpdateLocation(ctx context.Context, id string, role session.Role, kind session.Kind, loc session.LocationState) error {
 	column, err := columnFor(role, kind)
 	if err != nil {
@@ -137,6 +167,7 @@ func (p *Postgres) UpdateLocation(ctx context.Context, id string, role session.R
 	return nil
 }
 
+// Delete はセッション行を削除する。既に削除済みでもエラーにはならない（冪等）。
 func (p *Postgres) Delete(ctx context.Context, id string) error {
 	if _, err := p.db.ExecContext(ctx, `delete from sessions where id = $1`, id); err != nil {
 		return fmt.Errorf("delete session: %w", err)
@@ -144,6 +175,8 @@ func (p *Postgres) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+// columnFor は role と kind の組み合わせから対応するカラム名を決定する。
+// 不正な組み合わせ（例: B の target）の場合はエラーを返す。
 func columnFor(role session.Role, kind session.Kind) (string, error) {
 	switch {
 	case role == session.RoleA && kind == session.KindTarget:
@@ -157,4 +190,5 @@ func columnFor(role session.Role, kind session.Kind) (string, error) {
 	}
 }
 
+// コンパイル時に Postgres が session.Store を満たしていることを保証する。
 var _ session.Store = (*Postgres)(nil)

@@ -22,6 +22,14 @@ type Step = "choose" | "picking";
  * vs. tapping the map), then a small non-blocking card takes over so the
  * map stays fully tappable — repeated taps just move the pin instead of
  * re-triggering a modal every time.
+ *
+ * ユーザーA の入口画面。セッション（＝共有リンク）が存在する前に、
+ * ここで待ち合わせ地点を選んでおく必要がある — 仕様書§5.1/§5.2/§10-4により、
+ * 待ち合わせ地点が未設定のままリンクを発行することは意図的に禁止されている。
+ *
+ * 画面遷移: まずブロッキングモーダルの「choose」で方法（現在地 or 地図タップ）を選び、
+ * 次に非ブロッキングの小さなカードに切り替わることで地図は常にタップ可能なままになる。
+ * これにより、繰り返しタップしてもモーダルが毎回出ずにピンの位置だけが動く。
  */
 export function CreateForm({ onCreated }: CreateFormProps) {
   const [step, setStep] = useState<Step>("choose");
@@ -30,6 +38,7 @@ export function CreateForm({ onCreated }: CreateFormProps) {
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // useCurrentLocation: 現在地を取得し、待ち合わせ地点の候補として採用する。
   async function useCurrentLocation() {
     setError(null);
     setLocating(true);
@@ -44,17 +53,20 @@ export function CreateForm({ onCreated }: CreateFormProps) {
     }
   }
 
+  // chooseFromMap: 「地図から選択する」を選んだ場合、地図タップ待ちの状態にする。
   function chooseFromMap() {
     setError(null);
     setStep("picking");
   }
 
+  // reselect: 選択をやり直し、最初の方法選択画面に戻す。
   function reselect() {
     setPoint(null);
     setError(null);
     setStep("choose");
   }
 
+  // confirm: 選択した地点でセッションを作成し、ローカル保存の上、親へ通知する。
   async function confirm() {
     if (!point) return;
     setCreating(true);

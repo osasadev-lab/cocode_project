@@ -8,6 +8,7 @@ import (
 )
 
 // Config holds all runtime configuration loaded from environment variables.
+// Config は環境変数から読み込んだ実行時設定をまとめて保持する構造体。
 type Config struct {
 	Port          string
 	DatabaseURL   string
@@ -18,41 +19,51 @@ type Config struct {
 
 // Load reads configuration from environment variables, applying sane defaults
 // for local development. DATABASE_URL is required.
+// Load は環境変数から設定値を読み込み、ローカル開発用の妥当なデフォルト値を適用する。
+// DATABASE_URL のみ必須で、未設定の場合はエラーを返す。
 func Load() (*Config, error) {
+	// DATABASE_URL は唯一の必須項目。無ければ即座にエラーとする。
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		return nil, fmt.Errorf("DATABASE_URL is required")
 	}
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-
-	publicBaseURL := os.Getenv("PUBLIC_BASE_URL")
-	if publicBaseURL == "" {
-		publicBaseURL = "http://localhost:3000"
-	}
-
-	ttl := 30 * time.Minute
-	if v := os.Getenv("SESSION_TTL_MINUTES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			ttl = time.Duration(n) * time.Minute
-		}
-	}
-
-	rateLimit := 5
-	if v := os.Getenv("RATE_LIMIT_RPM"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			rateLimit = n
-		}
-	}
+	// 残りの項目は未設定でも動くよう、それぞれデフォルト値を用意する。
+	port := envOrDefault("PORT", "8080")
+	publicBaseURL := envOrDefault("PUBLIC_BASE_URL", "http://localhost:3000")
+	ttlMinutes := envIntOrDefault("SESSION_TTL_MINUTES", 30)
+	rateLimit := envIntOrDefault("RATE_LIMIT_RPM", 5)
 
 	return &Config{
 		Port:          port,
 		DatabaseURL:   dbURL,
 		PublicBaseURL: publicBaseURL,
-		SessionTTL:    ttl,
+		SessionTTL:    time.Duration(ttlMinutes) * time.Minute,
 		RateLimitRPM:  rateLimit,
 	}, nil
+}
+
+// envOrDefault returns the environment variable's value, or def if it is unset/empty.
+// envOrDefault は環境変数の値を返す。未設定（空文字）の場合は def を返す。
+func envOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+// envIntOrDefault parses the environment variable as a positive integer,
+// falling back to def when it is unset or invalid.
+// envIntOrDefault は環境変数を正の整数として解釈する。
+// 未設定または不正な値（数値でない・0以下）の場合は def を返す。
+func envIntOrDefault(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
 }
