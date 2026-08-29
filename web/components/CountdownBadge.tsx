@@ -6,9 +6,7 @@ interface CountdownBadgeProps {
   expiresAt: string;
 }
 
-/** Always-visible remaining-time display (spec §5.5/§9): the TTL never
- * extends, so users need a clear signal before it lapses.
- * 常時表示される残り時間バッジ（仕様書§5.5/§9）。TTL は延長されないため、
+/** 常時表示される残り時間バッジ（仕様書§5.5/§9）。TTL は延長されないため、
  * 失効前にユーザーへ明確なシグナルを出す必要がある。 */
 export function CountdownBadge({ expiresAt }: CountdownBadgeProps) {
   const [remainingMs, setRemainingMs] = useState(() => Date.parse(expiresAt) - Date.now());

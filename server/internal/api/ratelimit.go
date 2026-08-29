@@ -6,12 +6,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
-// rateLimiter is a simple fixed-window limiter keyed by client IP, used to
-// keep POST /api/sessions from being hammered by an anonymous caller
-// (spec §8-5: "簡易レート制限"). It's process-local, which is fine given
-// cocode's single Cloud Run instance (max-instances=1).
 // rateLimiter はクライアント IP ごとの単純な固定ウィンドウ方式のレート制限。
 // POST /api/sessions が匿名の呼び出し元から連打されるのを防ぐ
 // （仕様書§8-5「簡易レート制限」）。プロセスローカルな実装だが、
@@ -54,16 +52,15 @@ func (rl *rateLimiter) allow(key string) bool {
 	return true
 }
 
-// middleware rate-limits requests by remote IP.
-// middleware はリクエスト元 IP に基づいてレート制限を適用する HTTP ミドルウェア。
-func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !rl.allow(clientIP(r)) {
-			writeError(w, http.StatusTooManyRequests, "too many requests, please try again shortly")
+// middleware はリクエスト元 IP に基づいてレート制限を適用する Gin ミドルウェア。
+func (rl *rateLimiter) middleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !rl.allow(clientIP(c.Request)) {
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "too many requests, please try again shortly"})
 			return
 		}
-		next.ServeHTTP(w, r)
-	})
+		c.Next()
+	}
 }
 
 // clientIP はリクエストからクライアントの実 IP を取り出す。
@@ -71,8 +68,8 @@ func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 // 無ければ RemoteAddr から取り出す。
 func clientIP(r *http.Request) string {
 	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		// Cloud Run sits behind Google's front end, which sets this header
-		// with the original client IP listed first.
+		// Cloud Run は Google のフロントエンドの背後で動いており、このヘッダーの
+		// 先頭要素に元のクライアント IP がセットされる。
 		if i := strings.IndexByte(fwd, ','); i >= 0 {
 			return strings.TrimSpace(fwd[:i])
 		}

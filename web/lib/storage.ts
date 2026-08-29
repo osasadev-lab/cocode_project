@@ -1,16 +1,13 @@
 import { LOCAL_STORAGE_KEY } from "./config";
 
-// Persists just enough for A to resume the same session after a reload on
-// the same device (spec §5.1, §10-1). B never gets anything written here —
-// their token only ever lives in the share-link URL.
 // 同じ端末でのリロード後に A が同じセッションを再開できるよう、
 // 必要最小限の情報を localStorage に永続化する（仕様書§5.1, §10-1）。
 // B の情報はここには書き込まれない。B のトークンは共有リンクの URL にのみ存在する。
 export interface StoredSession {
   sessionId: string;
   token: string;
-  expiresAt: string; // ISO 8601, used to avoid resuming an already-expired session
-  shareUrl: string; // kept so A can find the invite link again after a reload
+  expiresAt: string; // ISO 8601。既に期限切れのセッションを再開しないための判定に使う
+  shareUrl: string; // リロード後も A が招待リンクを再取得できるよう保持する
 }
 
 // saveSession はセッション情報を localStorage に保存する（SSR環境では何もしない）。

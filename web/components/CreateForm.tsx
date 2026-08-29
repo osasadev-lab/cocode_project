@@ -14,15 +14,6 @@ interface CreateFormProps {
 type Step = "choose" | "picking";
 
 /**
- * A's entry screen. The meeting point must be chosen here, before a
- * session (and therefore a share link) exists at all — spec §5.1/§5.2/§10-4
- * deliberately forbid issuing a link with no meeting point set yet.
- *
- * Flow: a blocking "choose" modal picks the method first (current location
- * vs. tapping the map), then a small non-blocking card takes over so the
- * map stays fully tappable — repeated taps just move the pin instead of
- * re-triggering a modal every time.
- *
  * ユーザーA の入口画面。セッション（＝共有リンク）が存在する前に、
  * ここで待ち合わせ地点を選んでおく必要がある — 仕様書§5.1/§5.2/§10-4により、
  * 待ち合わせ地点が未設定のままリンクを発行することは意図的に禁止されている。

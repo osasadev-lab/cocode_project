@@ -17,8 +17,7 @@ function formatRelative(iso?: string): string {
   return `${minutes}分前に更新`;
 }
 
-/** Peer presence card (spec §9: "相手の状態(オンライン/最終更新時刻)を表示").
- * 相手のオンライン状態・最終更新時刻を表示するカード（仕様書§9）。 */
+/** 相手のオンライン状態・最終更新時刻を表示するカード（仕様書§9）。 */
 export function StatusCard({ peerLabel, online, lastUpdatedAt }: StatusCardProps) {
   return (
     <div className="cocode-glass cocode-status-card">

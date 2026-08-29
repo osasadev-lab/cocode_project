@@ -1,6 +1,3 @@
-// Package db implements session.Store against Supabase Postgres. It is the
-// only package that imports a database driver; every other package talks
-// to sessions through the session.Store interface.
 // db パッケージは session.Store を Supabase Postgres 上に実装する。
 // データベースドライバに依存するのはこのパッケージのみで、
 // 他のパッケージは session.Store インターフェース越しにしかセッションへアクセスしない。
@@ -33,15 +30,11 @@ create table if not exists sessions (
 );
 `
 
-// Postgres is a session.Store backed by Supabase.
 // Postgres は Supabase 上の Postgres を実体とする session.Store の実装。
 type Postgres struct {
 	db *sql.DB
 }
 
-// Open connects to Postgres using a standard connection string
-// (e.g. Supabase's "connection pooling" URI) and ensures the sessions
-// table exists.
 // Open は接続文字列（Supabase のコネクションプーリング用 URI など）を使って
 // Postgres へ接続し、sessions テーブルが存在することを保証する。
 func Open(ctx context.Context, connString string) (*Postgres, error) {
@@ -50,7 +43,7 @@ func Open(ctx context.Context, connString string) (*Postgres, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
-	sqlDB.SetMaxOpenConns(5) // cocode runs as a single Cloud Run instance; keep the pool small
+	sqlDB.SetMaxOpenConns(5) // cocode は単一の Cloud Run インスタンスで動くため、プールは小さく抑える
 	sqlDB.SetMaxIdleConns(5)
 
 	// 疎通確認（Ping）と、必要ならテーブル作成（マイグレーション）を行う。
@@ -134,8 +127,6 @@ func (p *Postgres) Get(ctx context.Context, id string) (*session.Record, error) 
 	return &rec, nil
 }
 
-// unmarshalNullableLocation decodes a nullable jsonb location column, returning
-// nil when the column is NULL. Shared by the loc_a_live/loc_b_live handling in Get.
 // unmarshalNullableLocation は NULL 許容の jsonb 位置情報カラムをデコードする。
 // カラムが NULL の場合は nil を返す。Get 内の loc_a_live / loc_b_live で共用する。
 func unmarshalNullableLocation(col sql.NullString, fieldName string) (*session.LocationState, error) {

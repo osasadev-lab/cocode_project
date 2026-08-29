@@ -1,7 +1,3 @@
-// Shared shapes mirroring the Go backend's JSON (see server/internal/session
-// and server/internal/hub). Keeping these in one file makes it obvious when
-// the frontend and backend protocols drift apart.
-//
 // Go バックエンドの JSON（server/internal/session, server/internal/hub 参照）に
 // 対応する型定義を1ファイルにまとめている。こうしておくことで、
 // フロントエンドとバックエンドのプロトコルにズレが生じた際に気付きやすくなる。
@@ -34,7 +30,6 @@ export interface SessionState {
   liveB?: LocationState;
 }
 
-// -- WebSocket protocol (spec §7) --
 // -- WebSocket プロトコル（仕様書§7）ここから --
 
 // クライアント → サーバー方向のメッセージ。

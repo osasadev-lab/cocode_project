@@ -1,6 +1,3 @@
-// Package ws implements cocode's realtime transport: the /ws endpoint that
-// both participants hold open for the life of a session, streaming live
-// location updates in both directions (spec §4, §7).
 // ws パッケージは cocode のリアルタイム通信を担う。
 // セッションが続く間、双方の参加者が保持し続ける /ws エンドポイントで、
 // ライブ位置情報の更新を双方向にストリーミングする（仕様書§4, §7）。
@@ -13,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 
 	"github.com/osasadev-lab/cocode_project/server/internal/hub"
@@ -22,19 +20,12 @@ import (
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
-	// The frontend (Firebase Hosting) and backend (Cloud Run) are
-	// deliberately different origins; the auth frame's token is what
-	// gates access, not same-origin, so any Origin is accepted here.
 	// フロントエンド（Firebase Hosting）とバックエンド（Cloud Run）は
 	// 意図的に別オリジンになっている。アクセス制御は同一オリジンではなく
 	// 認証フレームのトークンで行うため、Origin はここでは全て許可する。
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-// Conn adapts a gorilla websocket connection to hub.Conn. It serializes
-// writes with a mutex because gorilla forbids concurrent writers, and the
-// hub broadcasts from a different goroutine than this connection's own
-// read loop.
 // Conn は gorilla の websocket コネクションを hub.Conn に適合させるアダプタ。
 // gorilla は並行書き込みを許可しないため mutex で書き込みを直列化する。
 // hub はこのコネクション自身の読み取りループとは別の goroutine から
@@ -70,14 +61,11 @@ func NewHandler(h *hub.Manager, log *slog.Logger) *Handler {
 	return &Handler{hub: h, log: log}
 }
 
-// Register は /ws エンドポイントを ServeMux に登録する。
-func (h *Handler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("GET /ws", h.serve)
+// Register は /ws エンドポイントを r に登録する。
+func (h *Handler) Register(r *gin.Engine) {
+	r.GET("/ws", h.serve)
 }
 
-// authFrame is the first message a client must send right after the
-// upgrade, carrying the session id and token. Keeping these out of the
-// query string keeps them out of Cloud Run's access logs (spec §8-2).
 // authFrame は WebSocket へのアップグレード直後にクライアントが最初に送る
 // 認証メッセージで、セッション id とトークンを運ぶ。これらをクエリ文字列に
 // 含めないことで、Cloud Run のアクセスログに残らないようにしている（仕様書§8-2）。
@@ -86,8 +74,6 @@ type authFrame struct {
 	Token     string `json:"token"`
 }
 
-// inboundMsg is the shape of every client->server frame after auth (spec
-// §7's location_update message).
 // inboundMsg は認証後にクライアントからサーバーへ送られるフレームの形式
 // （仕様書§7の location_update メッセージ）。
 type inboundMsg struct {
@@ -98,8 +84,6 @@ type inboundMsg struct {
 	Accuracy float64      `json:"accuracy"`
 }
 
-// syncPayload is the initial "sync" frame sent right after Join succeeds,
-// giving the client the full current state of the session.
 // syncPayload は Join 成功直後に送られる初回の "sync" フレームで、
 // クライアントへセッションの現在の完全な状態を渡す。
 type syncPayload struct {
@@ -118,9 +102,9 @@ type syncPayload struct {
 // 3. 初回同期（sync）フレームの送信
 // 4. 位置情報更新メッセージを受信し続けるループ
 // 5. 切断時のクリーンアップ（hub.Disconnect）
-func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) serve(c *gin.Context) {
 	// 1. WebSocket へアップグレードする。
-	wsConn, err := upgrader.Upgrade(w, r, nil)
+	wsConn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		h.log.Warn("ws upgrade failed", "err", err)
 		return

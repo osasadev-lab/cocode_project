@@ -1,6 +1,3 @@
-// Command server runs cocode's Go backend: the REST API for creating and
-// ending sessions, and the WebSocket endpoint that streams live location
-// updates between the two participants of a session.
 // main コマンドは cocode の Go バックエンドを起動する。
 // セッションの作成・終了を行う REST API と、
 // セッション参加者2人の間でライブ位置情報を配信する WebSocket
@@ -15,6 +12,9 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/gin-contrib/cors"
+	"github.com/gin-gonic/gin"
 
 	"github.com/osasadev-lab/cocode_project/server/internal/api"
 	"github.com/osasadev-lab/cocode_project/server/internal/config"
@@ -46,18 +46,25 @@ func main() {
 	// 3. セッション管理（hub）と HTTP ルーティングを組み立てる。
 	manager := hub.NewManager(store, cfg.SessionTTL, logger)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
+	engine := gin.New()
+	engine.Use(gin.Recovery())
+	// WebSocket へのアップグレードは CORS の対象外（ws.upgrader の CheckOrigin が扱う）
+	// なので、このミドルウェアが関係するのは /api/* 系のルートのみ。
+	engine.Use(cors.New(cors.Config{
+		AllowOrigins: []string{cfg.PublicBaseURL},
+		AllowMethods: []string{"GET", "POST", "OPTIONS"},
+		AllowHeaders: []string{"Content-Type"},
+	}))
+	engine.GET("/healthz", func(c *gin.Context) {
+		c.String(http.StatusOK, "ok")
 	})
 
-	api.NewHandler(manager, cfg.PublicBaseURL, cfg.RateLimitRPM, logger).Register(mux)
-	ws.NewHandler(manager, logger).Register(mux)
+	api.NewHandler(manager, cfg.PublicBaseURL, cfg.RateLimitRPM, logger).Register(engine)
+	ws.NewHandler(manager, logger).Register(engine)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           withCORS(cfg.PublicBaseURL, mux),
+		Handler:           engine,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -79,25 +86,4 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	_ = srv.Shutdown(shutdownCtx)
-}
-
-// withCORS lets the frontend, served from a different origin on Firebase
-// Hosting, call the REST API on Cloud Run. WebSocket upgrades aren't
-// subject to CORS (handled instead by ws.upgrader's CheckOrigin), so this
-// only matters for the /api/* routes.
-// withCORS は、Firebase Hosting 上の別オリジンから配信されるフロントエンドが
-// Cloud Run 上の REST API を呼び出せるようにする。WebSocket への
-// アップグレードは CORS の対象外（代わりに ws.upgrader の CheckOrigin が扱う）
-// なので、これが関係するのは /api/* 系のルートのみ。
-func withCORS(allowedOrigin string, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }

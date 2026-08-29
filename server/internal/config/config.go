@@ -7,7 +7,6 @@ import (
 	"time"
 )
 
-// Config holds all runtime configuration loaded from environment variables.
 // Config は環境変数から読み込んだ実行時設定をまとめて保持する構造体。
 type Config struct {
 	Port          string
@@ -17,8 +16,6 @@ type Config struct {
 	RateLimitRPM  int // POST /api/sessions requests allowed per IP per minute
 }
 
-// Load reads configuration from environment variables, applying sane defaults
-// for local development. DATABASE_URL is required.
 // Load は環境変数から設定値を読み込み、ローカル開発用の妥当なデフォルト値を適用する。
 // DATABASE_URL のみ必須で、未設定の場合はエラーを返す。
 func Load() (*Config, error) {
@@ -43,7 +40,6 @@ func Load() (*Config, error) {
 	}, nil
 }
 
-// envOrDefault returns the environment variable's value, or def if it is unset/empty.
 // envOrDefault は環境変数の値を返す。未設定（空文字）の場合は def を返す。
 func envOrDefault(key, def string) string {
 	if v := os.Getenv(key); v != "" {
@@ -52,8 +48,6 @@ func envOrDefault(key, def string) string {
 	return def
 }
 
-// envIntOrDefault parses the environment variable as a positive integer,
-// falling back to def when it is unset or invalid.
 // envIntOrDefault は環境変数を正の整数として解釈する。
 // 未設定または不正な値（数値でない・0以下）の場合は def を返す。
 func envIntOrDefault(key string, def int) int {

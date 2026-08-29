@@ -6,13 +6,10 @@ import (
 	"fmt"
 )
 
-// NewToken returns a URL-safe random token with at least 128 bits of
-// entropy (spec §8-1), suitable for both session tokens and, since
-// Postgres generates the session id itself, is also reused nowhere else.
 // NewToken は 128 ビット以上のエントロピーを持つ、URL セーフなランダムトークンを返す。
 // セッションのトークン用途にのみ使われ、他の用途（id 採番など）とは共有しない。
 func NewToken() (string, error) {
-	b := make([]byte, 18) // 144 bits
+	b := make([]byte, 18) // 144ビット
 	// 暗号学的に安全な乱数を生成する。
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("generate token: %w", err)

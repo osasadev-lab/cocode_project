@@ -14,15 +14,6 @@ type Mode =
   | { kind: "create" }
   | { kind: "session"; sessionId: string; token: string; shareUrl?: string };
 
-// cocode is exported as static HTML (next.config.js: output "export"), so
-// there is no dynamic /s/[id] route — instead this single page decides its
-// role from the URL query string (spec §3's routing note, §5.1, §10-2).
-// The bare URL (no query string) is only ever the "pick a meeting point"
-// screen; both A and B always view live sharing at a `?s=<id>&t=<token>`
-// URL — A's own token forms a personal URL distinct from the invite link
-// (which carries B's token). A session resumed from localStorage rewrites
-// the address bar to that URL via replaceState so what's shown always
-// matches what's in the URL.
 // sessionUrl は、セッション参加用の URL（?s=<id>&t=<token>）を組み立てる。
 //
 // cocode は静的 HTML として書き出される（next.config.js の output: "export"）ため、
@@ -50,10 +41,6 @@ export default function Page() {
 
     // URL にセッション情報（s, t）があれば最優先でそれを使う。
     if (s && t) {
-      // The invite link (B's token) never appears in localStorage, so this
-      // only recovers anything for A reloading on the same device — but
-      // that's the case that matters: A's own shareUrl otherwise has no
-      // other source once it's off the create-session response.
       // 招待リンク（B のトークン）は localStorage には書き込まれないため、
       // ここで復元できるのは同じ端末で A がリロードした場合のみ。
       // しかしそれこそが重要なケースであり、A 自身の shareUrl は

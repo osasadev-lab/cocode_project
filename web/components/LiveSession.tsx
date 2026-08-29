@@ -16,8 +16,8 @@ import type { LocationState } from "@/lib/types";
 interface LiveSessionProps {
   sessionId: string;
   token: string;
-  /** Only set right after A creates the session on this device — shown so
-   * A can copy the invite link again before B has joined. */
+  /** A がこの端末でセッションを作成した直後のみ設定される。
+   * B が参加するまでの間、A が招待リンクを再度コピーできるよう表示する。 */
   shareUrl?: string;
 }
 
@@ -37,8 +37,6 @@ export function LiveSession({ sessionId, token, shareUrl }: LiveSessionProps) {
   const [confirmingEnd, setConfirmingEnd] = useState(false);
   const [endError, setEndError] = useState<string | null>(null);
 
-  // Resend our current fix whenever it changes AND whenever the socket
-  // (re)opens, so a fix obtained before the handshake finished isn't lost.
   // 自分の位置が変化した時、および WebSocket が（再）接続した時の両方で
   // 現在の位置を送り直す。これにより、認証ハンドシェイク完了前に取得した
   // 位置情報が失われないようにする。
@@ -71,11 +69,6 @@ export function LiveSession({ sessionId, token, shareUrl }: LiveSessionProps) {
 
   const ended = localEnded ? { kind: "manual" as const } : socket.ended ? { kind: socket.ended.kind } : null;
 
-  // Once the session is over there's nothing left to show on the map, so
-  // each side gets its own dedicated full screen instead of a modal over a
-  // dead map: A (who has the context of having shared/ended it) sees a
-  // proper "ended" screen, B (who only ever held a link) sees a plain
-  // not-found — same treatment a dead link gets anywhere else.
   // セッション終了後は地図に表示すべきものが何も無いため、死んだ地図の上に
   // モーダルを重ねるのではなく、それぞれ専用の全画面表示に切り替える。
   // A（自分が共有・終了した経緯を知っている）には正式な「終了しました」画面を、

@@ -22,10 +22,6 @@ interface CocodeSocketState {
 const RECONNECT_DELAY_MS = 2000;
 
 /**
- * Owns the single WebSocket connection for a session (spec §4, §7): sends
- * the auth frame, keeps target/liveA/liveB in sync as broadcasts arrive,
- * and exposes a function to push this client's own location updates.
- *
  * 1つのセッションに対する WebSocket コネクションを管理するフック（仕様書§4, §7）。
  * 認証フレームの送信、サーバーからのブロードキャストに応じた
  * target/liveA/liveB の同期、自分側の位置情報更新を送信する関数の提供を行う。
@@ -106,8 +102,6 @@ export function useCocodeSocket(sessionId: string | null, token: string | null) 
             setState((s) => ({ ...s, ended: { kind: "ttl" } }));
             break;
           case "error":
-            // The session vanished (bad token, already expired, etc.) — no
-            // point reconnecting.
             // セッションが消失した（不正なトークン、既に失効済みなど）ため、
             // 再接続しても無駄なので諦める。
             closedByUser.current = true;

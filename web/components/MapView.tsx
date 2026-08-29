@@ -10,8 +10,8 @@ interface MapViewProps {
   target: LocationState | null;
   liveA: LocationState | null;
   liveB: LocationState | null;
-  /** When true, tapping the map reports the coordinate via onPickTarget
-   * instead of just panning (used while A is choosing the meeting point). */
+  /** true の場合、地図タップ時にパンではなく onPickTarget 経由で座標を通知する
+   * （A が待ち合わせ地点を選んでいる間に使う）。 */
   pickingTarget?: boolean;
   onPickTarget?: (lat: number, lng: number) => void;
 }
@@ -30,9 +30,6 @@ function lineFromCoords(coords: [number, number][]): GeoJSON.Feature<GeoJSON.Lin
   return { type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } };
 }
 
-// upsertMarker creates a marker element for ref on first use, then reuses it
-// on every later call — shared by the target/liveA/liveB marker effects
-// below so each only has to describe its own class/anchor/icon.
 // upsertMarker はマーカー要素を最初の呼び出し時にだけ作成し、以降は
 // 同じインスタンスを使い回す。待ち合わせ地点・A/Bのライブ位置、3つの
 // マーカー用エフェクトで共有し、各エフェクトは自身のクラス名・アンカー・
@@ -52,11 +49,6 @@ function upsertMarker(
   ref.current.setLngLat(lngLat).addTo(map);
 }
 
-// De-dupes walking-route requests for one participant's line: skips
-// re-fetching when neither endpoint moved, and cancels/ignores a
-// still-in-flight request when a newer one supersedes it (fetch order isn't
-// guaranteed to match response order). No debounce — GPS updates are
-// already throttled upstream (LIVE_UPDATE_MIN_DISTANCE_M/MS).
 // createRouteUpdater は、1人ぶんの徒歩ルート取得リクエストの重複を防ぐ
 // クロージャを作る。両端点が動いていなければ再取得をスキップし、
 // より新しいリクエストで上書きされた場合は古い応答を無視/中断する
@@ -84,7 +76,7 @@ function createRouteUpdater(setLine: (coords: [number, number][]) => void) {
     const controller = new AbortController();
     abortController = controller;
     fetchWalkingRoute(from, to, controller.signal).then((coords) => {
-      if (thisRequestId !== requestId) return; // superseded — drop this result
+      if (thisRequestId !== requestId) return; // 新しいリクエストに追い越された場合は結果を破棄
       if (coords) setLine(coords);
     });
   };
@@ -103,14 +95,13 @@ export function MapView({ target, liveA, liveB, pickingTarget, onPickTarget }: M
   onPickTargetRef.current = onPickTarget;
   const updateRouteARef = useRef<ReturnType<typeof createRouteUpdater> | null>(null);
   const updateRouteBRef = useRef<ReturnType<typeof createRouteUpdater> | null>(null);
-  // Tracks the latest props so route-layer setup (which may be delayed —
-  // see below) can immediately fetch with whatever's already known, since
-  // the props effect further down may have already run and no-op'd while
-  // updateRouteARef/B were still null.
+  // ルートレイヤーのセットアップ（後述の通り遅延する場合がある）が、
+  // その時点で分かっている最新の props ですぐに取得できるようにする。
+  // 下方の props エフェクトは、updateRouteARef/B がまだ null の間に
+  // 何もせず終わっている可能性があるため。
   const latestPropsRef = useRef({ target, liveA, liveB });
   latestPropsRef.current = { target, liveA, liveB };
 
-  // Map instance: created once and torn down on unmount.
   // 地図インスタンスの生成。マウント時に一度だけ実行し、アンマウント時に破棄する。
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -124,12 +115,6 @@ export function MapView({ target, liveA, liveB, pickingTarget, onPickTarget }: M
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
     map.addControl(new maplibregl.AttributionControl({ compact: true }));
 
-    // Retries on "styledata" instead of waiting for "load": this MapTiler
-    // style never fires "load" (it references at least one sprite icon,
-    // "office", that 404s — MapLibre's isStyleLoaded() seems to stay false
-    // forever because of it, even though the style is otherwise fully
-    // usable), but calling addSource too early throws, so poll readiness
-    // via the exception instead of a boolean check.
     // setUpRouteLayers: ルート表示用のレイヤーをセットアップする。
     // "load" イベントではなく "styledata" でリトライしているのは、
     // 現在のスタイルが「office」スプライトアイコンの404が原因で "load" を
@@ -143,8 +128,8 @@ export function MapView({ target, liveA, liveB, pickingTarget, onPickTarget }: M
       } catch {
         return false;
       }
-      // Dashed to read as a route hint rather than an authoritative path —
-      // it's a walking route from a free, best-effort routing service.
+      // 破線にしているのは、確定ルートではなく目安の経路であることを示すため
+      // （無料・ベストエフォートのルーティングサービスによる徒歩ルート）。
       map.addLayer({
         id: "cocode-route-a-line",
         type: "line",
@@ -255,10 +240,6 @@ export function MapView({ target, liveA, liveB, pickingTarget, onPickTarget }: M
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveB]);
 
-  // Walking route from each participant's live position to the meeting
-  // point (spec update: replaces the old movement-trail lines). v1 is
-  // walking-only; a later version is expected to add driving/transit as a
-  // user-chosen profile.
   // 各参加者のライブ位置から待ち合わせ地点までの徒歩ルートを更新する
   // （旧仕様の移動軌跡ラインを置き換えたもの）。v1 は徒歩のみ対応。
   useEffect(() => {

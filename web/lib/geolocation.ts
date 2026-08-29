@@ -8,8 +8,7 @@ export interface GeoPoint {
   accuracy: number;
 }
 
-/** One-shot current-position lookup for the "現在地を使う" button.
- * 「現在地を使う」ボタン用に、現在位置を1回だけ取得する。 */
+/** 「現在地を使う」ボタン用に、現在位置を1回だけ取得する。 */
 export function getCurrentPosition(): Promise<GeoPoint> {
   return new Promise((resolve, reject) => {
     if (!("geolocation" in navigator)) {
@@ -42,11 +41,6 @@ function haversineMeters(a: GeoPoint, b: GeoPoint): number {
 }
 
 /**
- * Continuously watches the browser's GPS position (spec §5.3) and reports
- * every fix, throttled so a subsequent update is only surfaced once the
- * device has moved far enough or enough time has passed — this is the
- * knob that keeps battery and WebSocket traffic reasonable.
- *
  * ブラウザの GPS 位置を継続的に監視し（仕様書§5.3）、取得結果を返す。
  * 端末が一定距離以上移動する、または一定時間以上経過するまでは
  * 新しい値を反映しないようスロットリングしており、これがバッテリー消費と
