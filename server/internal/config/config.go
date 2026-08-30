@@ -14,6 +14,19 @@ type Config struct {
 	PublicBaseURL string // base URL the frontend uses to build share links, e.g. https://cocode.example.com
 	SessionTTL    time.Duration
 	RateLimitRPM  int // POST /api/sessions requests allowed per IP per minute
+
+	// 電車ETA(仕様書§7.1)。GoogleRoutesAPIKeyが空でも起動でき、その場合は
+	// POST /api/eta/transit が503を返すだけで他機能に影響しない。
+	GoogleRoutesAPIKey  string
+	TransitRateLimitRPM int // POST /api/eta/transit requests allowed per IP per minute
+
+	// フィードバック通知メール(仕様書§17.2)。SMTPHostが空ならfeedbackmail.Asyncは
+	// 何もせずスキップする(aiboのfeedbackmailパターンを踏襲)。
+	SMTPHost            string
+	SMTPPort            string
+	SMTPUsername        string
+	SMTPPassword        string
+	FeedbackNotifyEmail string
 }
 
 // Load は環境変数から設定値を読み込み、ローカル開発用の妥当なデフォルト値を適用する。
@@ -30,6 +43,7 @@ func Load() (*Config, error) {
 	publicBaseURL := envOrDefault("PUBLIC_BASE_URL", "http://localhost:3000")
 	ttlMinutes := envIntOrDefault("SESSION_TTL_MINUTES", 60)
 	rateLimit := envIntOrDefault("RATE_LIMIT_RPM", 5)
+	transitRateLimit := envIntOrDefault("TRANSIT_RATE_LIMIT_RPM", 10)
 
 	return &Config{
 		Port:          port,
@@ -37,6 +51,15 @@ func Load() (*Config, error) {
 		PublicBaseURL: publicBaseURL,
 		SessionTTL:    time.Duration(ttlMinutes) * time.Minute,
 		RateLimitRPM:  rateLimit,
+
+		GoogleRoutesAPIKey:  os.Getenv("GOOGLE_ROUTES_API_KEY"),
+		TransitRateLimitRPM: transitRateLimit,
+
+		SMTPHost:            os.Getenv("SMTP_HOST"),
+		SMTPPort:            envOrDefault("SMTP_PORT", "587"),
+		SMTPUsername:        os.Getenv("SMTP_USERNAME"),
+		SMTPPassword:        os.Getenv("SMTP_PASSWORD"),
+		FeedbackNotifyEmail: os.Getenv("FEEDBACK_NOTIFY_EMAIL"),
 	}, nil
 }
 

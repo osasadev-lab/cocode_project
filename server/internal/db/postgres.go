@@ -64,6 +64,14 @@ create table if not exists participants (
   arrived_at      timestamptz,
   joined_at       timestamptz not null default now()
 );
+
+create table if not exists feedbacks (
+  id         uuid primary key default gen_random_uuid(),
+  message    text not null,
+  reply_to   text,
+  context    text,
+  created_at timestamptz not null default now()
+);
 `
 
 // Postgres は Supabase 上の Postgres を実体とする session.Store の実装。
@@ -274,6 +282,40 @@ func (p *Postgres) UpdateParticipantProfile(ctx context.Context, participantID, 
 		return fmt.Errorf("update participant profile: %w", err)
 	}
 	return nil
+}
+
+// UpdateParticipantTransport は参加者の移動手段・ETAを更新する（仕様書§7, §9）。
+func (p *Postgres) UpdateParticipantTransport(ctx context.Context, participantID string, transportMode session.TransportMode, etaSeconds *int) error {
+	const q = `update participants set transport_mode = $1, eta_seconds = $2 where id = $3`
+	if _, err := p.db.ExecContext(ctx, q, transportMode, etaSeconds, participantID); err != nil {
+		return fmt.Errorf("update participant transport: %w", err)
+	}
+	return nil
+}
+
+// UpdateParticipantArrival は参加者の到着時刻を記録する（仕様書§12.1-①）。
+func (p *Postgres) UpdateParticipantArrival(ctx context.Context, participantID string, arrivedAt time.Time) error {
+	const q = `update participants set arrived_at = $1 where id = $2`
+	if _, err := p.db.ExecContext(ctx, q, arrivedAt, participantID); err != nil {
+		return fmt.Errorf("update participant arrival: %w", err)
+	}
+	return nil
+}
+
+// InsertFeedback はfeedbacksテーブルへ1件保存する（仕様書§17.2）。
+// session.Storeとは無関係の独立メソッド(api.FeedbackStoreインターフェースだけを満たす)。
+func (p *Postgres) InsertFeedback(ctx context.Context, message, replyTo, context_ string) (string, time.Time, error) {
+	const q = `
+		insert into feedbacks (message, reply_to, context)
+		values ($1, nullif($2, ''), nullif($3, ''))
+		returning id, created_at
+	`
+	var id string
+	var createdAt time.Time
+	if err := p.db.QueryRowContext(ctx, q, message, replyTo, context_).Scan(&id, &createdAt); err != nil {
+		return "", time.Time{}, fmt.Errorf("insert feedback: %w", err)
+	}
+	return id, createdAt, nil
 }
 
 // Delete はセッションを削除する（既に削除済みでもエラーにはならない。冪等）。

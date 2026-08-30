@@ -19,6 +19,8 @@ import (
 	"github.com/osasadev-lab/cocode_project/server/internal/api"
 	"github.com/osasadev-lab/cocode_project/server/internal/config"
 	"github.com/osasadev-lab/cocode_project/server/internal/db"
+	"github.com/osasadev-lab/cocode_project/server/internal/feedbackmail"
+	"github.com/osasadev-lab/cocode_project/server/internal/googleroutes"
 	"github.com/osasadev-lab/cocode_project/server/internal/hub"
 	"github.com/osasadev-lab/cocode_project/server/internal/ws"
 )
@@ -59,8 +61,18 @@ func main() {
 		c.String(http.StatusOK, "ok")
 	})
 
-	api.NewHandler(manager, cfg.PublicBaseURL, cfg.RateLimitRPM, logger).Register(engine)
+	routesClient := googleroutes.NewClient(cfg.GoogleRoutesAPIKey)
+	api.NewHandler(manager, cfg.PublicBaseURL, cfg.RateLimitRPM, routesClient, cfg.TransitRateLimitRPM, logger).Register(engine)
 	ws.NewHandler(manager, logger).Register(engine)
+
+	mailCfg := feedbackmail.Config{
+		Host:        cfg.SMTPHost,
+		Port:        cfg.SMTPPort,
+		Username:    cfg.SMTPUsername,
+		Password:    cfg.SMTPPassword,
+		NotifyEmail: cfg.FeedbackNotifyEmail,
+	}
+	api.NewFeedbackHandler(store, mailCfg, logger).Register(engine)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,

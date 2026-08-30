@@ -10,36 +10,42 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/osasadev-lab/cocode_project/server/internal/googleroutes"
 	"github.com/osasadev-lab/cocode_project/server/internal/hub"
 	"github.com/osasadev-lab/cocode_project/server/internal/session"
 )
 
 // Handler は REST エンドポイント群の依存関係をまとめて保持する構造体。
 type Handler struct {
-	hub           *hub.Manager
-	publicBaseURL string
-	log           *slog.Logger
-	createLimiter *rateLimiter
+	hub            *hub.Manager
+	publicBaseURL  string
+	log            *slog.Logger
+	createLimiter  *rateLimiter
+	routes         *googleroutes.Client
+	transitLimiter *rateLimiter
 }
 
 // NewHandler は Handler を生成する。
-func NewHandler(h *hub.Manager, publicBaseURL string, rateLimitPerMinute int, log *slog.Logger) *Handler {
+func NewHandler(h *hub.Manager, publicBaseURL string, rateLimitPerMinute int, routes *googleroutes.Client, transitRateLimitPerMinute int, log *slog.Logger) *Handler {
 	return &Handler{
-		hub:           h,
-		publicBaseURL: publicBaseURL,
-		log:           log,
-		createLimiter: newRateLimiter(rateLimitPerMinute, time.Minute),
+		hub:            h,
+		publicBaseURL:  publicBaseURL,
+		log:            log,
+		createLimiter:  newRateLimiter(rateLimitPerMinute, time.Minute),
+		routes:         routes,
+		transitLimiter: newRateLimiter(transitRateLimitPerMinute, time.Minute),
 	}
 }
 
 // Register は cocode の REST エンドポイントを r に登録する。
-// レート制限がかかるのはセッション作成のみ（仕様書§8-5）。
+// レート制限がかかるのはセッション作成・電車ETA取得のみ（仕様書§8-5, §7.1）。
 // 状態取得と終了は既に有効なトークンを要求しており、
 // IP ベースの回数制限よりもずっと強いガードになっている。
 func (h *Handler) Register(r *gin.Engine) {
 	r.POST("/api/sessions", h.createLimiter.middleware(), h.createSession)
 	r.GET("/api/sessions/:id/state", h.getState)
 	r.POST("/api/sessions/:id/end", h.endSession)
+	r.POST("/api/eta/transit", h.transitLimiter.middleware(), h.etaTransit)
 }
 
 // createSessionReq / createSessionResp: POST /api/sessions のリクエスト/レスポンス型
@@ -222,4 +228,57 @@ func validLatLng(lat, lng float64) bool {
 		return false
 	}
 	return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180
+}
+
+type etaTransitReq struct {
+	FromLat float64 `json:"fromLat"`
+	FromLng float64 `json:"fromLng"`
+	ToLat   float64 `json:"toLat"`
+	ToLng   float64 `json:"toLng"`
+}
+
+type etaTransitResp struct {
+	ETASeconds int                        `json:"etaSeconds"`
+	Polyline   string                     `json:"polyline"`
+	Steps      []googleroutes.TransitStep `json:"steps"`
+}
+
+// etaTransit は POST /api/eta/transit を実装する（仕様書§7.1）。
+// Google Routes APIのAPIキーはフロントエンドへ露出させないため、
+// 必ずこのバックエンド経由で呼び出す。
+func (h *Handler) etaTransit(c *gin.Context) {
+	if h.routes == nil || !h.routes.Configured() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "transit ETA is not configured"})
+		return
+	}
+
+	var req etaTransitReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON body"})
+		return
+	}
+	if !validLatLng(req.FromLat, req.FromLng) || !validLatLng(req.ToLat, req.ToLng) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "fromLat/fromLng/toLat/toLng must be valid coordinates"})
+		return
+	}
+
+	route, err := h.routes.ComputeTransitRoute(c.Request.Context(),
+		googleroutes.LatLng{Lat: req.FromLat, Lng: req.FromLng},
+		googleroutes.LatLng{Lat: req.ToLat, Lng: req.ToLng},
+	)
+	if errors.Is(err, googleroutes.ErrNoRoute) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no transit route found"})
+		return
+	}
+	if err != nil {
+		h.log.Error("compute transit route failed", "err", err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to compute transit route"})
+		return
+	}
+
+	c.JSON(http.StatusOK, etaTransitResp{
+		ETASeconds: route.ETASeconds,
+		Polyline:   route.Polyline,
+		Steps:      route.Steps,
+	})
 }

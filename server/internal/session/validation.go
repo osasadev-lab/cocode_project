@@ -44,3 +44,13 @@ func ValidDisplayName(name string) bool {
 func ValidAvatarIcon(icon string) bool {
 	return ValidAvatarIcons[icon]
 }
+
+// ValidTransportMode は移動手段の識別子が既知の3種に含まれるかを判定する（仕様書§7）。
+func ValidTransportMode(mode TransportMode) bool {
+	switch mode {
+	case TransportWalk, TransportCar, TransportTrain:
+		return true
+	default:
+		return false
+	}
+}

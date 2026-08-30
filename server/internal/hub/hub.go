@@ -13,10 +13,13 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/osasadev-lab/cocode_project/server/internal/session"
 )
@@ -34,6 +37,7 @@ const (
 	EventParticipantJoined  = "participant_joined"
 	EventParticipantLeft    = "participant_left"
 	EventParticipantUpdated = "participant_updated"
+	EventParticipantArrived = "participant_arrived"
 	EventSessionEnded       = "session_ended"
 	EventSessionExpired     = "session_expired"
 )
@@ -41,6 +45,17 @@ const (
 // ProfileUpdateCooldown は同一参加者からの profile_update を受け付ける最短間隔
 // （乱用対策、仕様書§14.5。§12.1のexpressionクールダウンと同じ考え方）。
 const ProfileUpdateCooldown = 5 * time.Second
+
+// ExpressionCooldown は同一参加者からの expression を受け付ける最短間隔
+// （乱用対策、仕様書§12.1）。
+const ExpressionCooldown = 3 * time.Second
+
+// MaxExpressionTextLength はスタンプのテキスト最大文字数(定型文からの選択を
+// 想定しているが、サーバー側でも念のため上限を設ける)。
+const MaxExpressionTextLength = 50
+
+// arrivalRadiusMeters は到着とみなす目的地からの半径（仕様書§12.1-①、既定50m）。
+const arrivalRadiusMeters = 50.0
 
 // participantSummary は participant_joined ブロードキャストに乗せる、
 // 新規参加者の公開情報（仕様書§5.4）。sync フレーム用のより詳細な表現
@@ -54,17 +69,21 @@ type participantSummary struct {
 }
 
 type peerLocationMsg struct {
-	Type          string       `json:"type"`
-	ParticipantID string       `json:"participantId"`
-	Role          session.Role `json:"role"`
-	DisplayName   string       `json:"displayName"`
-	AvatarIcon    string       `json:"avatarIcon"`
-	Kind          session.Kind `json:"kind"`
-	Lat           float64      `json:"lat"`
-	Lng           float64      `json:"lng"`
-	Accuracy      float64      `json:"accuracy,omitempty"`
-	Address       string       `json:"address,omitempty"`
-	UpdatedAt     time.Time    `json:"updatedAt"`
+	Type          string                `json:"type"`
+	ParticipantID string                `json:"participantId"`
+	Role          session.Role          `json:"role"`
+	DisplayName   string                `json:"displayName"`
+	AvatarIcon    string                `json:"avatarIcon"`
+	Kind          session.Kind          `json:"kind"`
+	Lat           float64               `json:"lat"`
+	Lng           float64               `json:"lng"`
+	Accuracy      float64               `json:"accuracy,omitempty"`
+	Address       string                `json:"address,omitempty"`
+	TransportMode session.TransportMode `json:"transportMode,omitempty"`
+	ETASeconds    *int                  `json:"etaSeconds,omitempty"`
+	RoutePolyline string                `json:"routePolyline,omitempty"`
+	RouteSteps    json.RawMessage       `json:"routeSteps,omitempty"`
+	UpdatedAt     time.Time             `json:"updatedAt"`
 }
 
 type participantJoinedMsg struct {
@@ -86,21 +105,50 @@ type participantUpdatedMsg struct {
 	UpdatedAt     time.Time `json:"updatedAt"`
 }
 
+type participantArrivedMsg struct {
+	Type          string    `json:"type"`
+	ParticipantID string    `json:"participantId"`
+	DisplayName   string    `json:"displayName"`
+	ArrivedAt     time.Time `json:"arrivedAt"`
+}
+
+type peerExpressionMsg struct {
+	Type          string    `json:"type"`
+	ParticipantID string    `json:"participantId"`
+	DisplayName   string    `json:"displayName"`
+	AvatarIcon    string    `json:"avatarIcon"`
+	Kind          string    `json:"kind"` // "stamp" | "reaction"
+	Text          string    `json:"text,omitempty"`
+	SentAt        time.Time `json:"sentAt"`
+}
+
 type reasonEventMsg struct {
 	Type   string `json:"type"`
 	Reason string `json:"reason"`
+}
+
+// LiveExtras は kind="live" の location_update に付随する、移動手段・ETA・
+// 経路情報（仕様書§7, §7.1.1）。kind="target"の呼び出しではゼロ値を渡す。
+// サーバーはRoutePolyline/RouteStepsの中身を理解せず、そのままブロードキャスト
+// に転記するだけ（保存もしない — DBに列を持たない一過性のデータ）。
+type LiveExtras struct {
+	TransportMode session.TransportMode
+	ETASeconds    *int
+	RoutePolyline string
+	RouteSteps    json.RawMessage
 }
 
 // room は1つの稼働中セッションのメモリ上の状態を保持する。
 // v1の connA/connB 固定フィールドを、participantId をキーにした map に置き換える
 // （仕様書§5.4、不具合修正§0の土台）。
 type room struct {
-	mu              sync.Mutex
-	rec             *session.Record
-	participants    map[string]*session.Participant // participantId -> メタ情報のキャッシュ
-	conns           map[string]Conn                 // participantId -> 接続中のコネクション（未接続なら不在）
-	profileCooldown map[string]time.Time            // participantId -> 直近の profile_update 時刻（仕様書§14.5）
-	timer           *time.Timer
+	mu                 sync.Mutex
+	rec                *session.Record
+	participants       map[string]*session.Participant // participantId -> メタ情報のキャッシュ
+	conns              map[string]Conn                 // participantId -> 接続中のコネクション（未接続なら不在）
+	profileCooldown    map[string]time.Time            // participantId -> 直近の profile_update 時刻（仕様書§14.5）
+	expressionCooldown map[string]time.Time            // participantId -> 直近の expression 時刻（仕様書§12.1）
+	timer              *time.Timer
 }
 
 // Manager はこのプロセス上の全ての稼働中セッション（room）を所有・管理する。
@@ -128,11 +176,12 @@ func (m *Manager) newRoom(rec *session.Record, participants []*session.Participa
 		pm[p.ID] = p
 	}
 	return &room{
-		rec:             rec,
-		participants:    pm,
-		conns:           make(map[string]Conn),
-		profileCooldown: make(map[string]time.Time),
-		timer:           time.AfterFunc(time.Until(rec.ExpiresAt), func() { m.expire(id) }),
+		rec:                rec,
+		participants:       pm,
+		conns:              make(map[string]Conn),
+		profileCooldown:    make(map[string]time.Time),
+		expressionCooldown: make(map[string]time.Time),
+		timer:              time.AfterFunc(time.Until(rec.ExpiresAt), func() { m.expire(id) }),
 	}
 }
 
@@ -359,8 +408,11 @@ func (m *Manager) Disconnect(sessionID, participantID string, conn Conn) {
 // UpdateLocation は location_update メッセージ（仕様書§5.4）を反映する。
 // kind="target"（目的地）はロールがホストの参加者のみ設定可能
 // （なりすまし防止、仕様書§8-8を踏襲）。kind="live" は全ロール許可。
-// 更新内容は永続化した上で、他の接続中参加者全員へブロードキャストする。
-func (m *Manager) UpdateLocation(ctx context.Context, sessionID, participantID string, kind session.Kind, loc session.LocationState, address string) error {
+// kind="live"の場合、extraで渡された移動手段・ETA・経路情報（電車モードの
+// ポリライン・乗換駅名を含む、§7, §7.1.1）も併せて反映し、目的地への到着検知
+// （§12.1-①）も行う。更新内容は永続化した上で、他の接続中参加者全員へ
+// ブロードキャストする。
+func (m *Manager) UpdateLocation(ctx context.Context, sessionID, participantID string, kind session.Kind, loc session.LocationState, address string, extra LiveExtras) error {
 	m.mu.Lock()
 	r, ok := m.rooms[sessionID]
 	m.mu.Unlock()
@@ -379,15 +431,33 @@ func (m *Manager) UpdateLocation(ctx context.Context, sessionID, participantID s
 		return fmt.Errorf("role %s may not set the destination", self.Role)
 	}
 
+	arrived := false
 	switch kind {
 	case session.KindTarget:
 		r.rec.DestLat, r.rec.DestLng, r.rec.DestAddress, r.rec.DestUpdatedAt = loc.Lat, loc.Lng, address, loc.UpdatedAt
 	case session.KindLive:
 		locCopy := loc
 		self.Live = &locCopy
+		if session.ValidTransportMode(extra.TransportMode) {
+			self.TransportMode = extra.TransportMode
+		}
+		if extra.ETASeconds != nil {
+			self.ETASeconds = extra.ETASeconds
+		}
+		// 到着検知（仕様書§12.1-①）: 目的地から一定半径以内、かつ未到着の場合のみ。
+		if self.ArrivedAt == nil && haversineMeters(loc.Lat, loc.Lng, r.rec.DestLat, r.rec.DestLng) <= arrivalRadiusMeters {
+			now := time.Now().UTC()
+			self.ArrivedAt = &now
+			arrived = true
+		}
 	}
 	role, displayName, avatarIcon := self.Role, self.DisplayName, self.AvatarIcon
+	transportMode, etaSeconds, arrivedAt := self.TransportMode, self.ETASeconds, self.ArrivedAt
 	peers := otherConns(r, participantID)
+	var allConns []Conn
+	if arrived {
+		allConns = allConnsIncludingSelf(r)
+	}
 	r.mu.Unlock()
 
 	var persistErr error
@@ -396,12 +466,20 @@ func (m *Manager) UpdateLocation(ctx context.Context, sessionID, participantID s
 		persistErr = m.store.UpdateTarget(ctx, sessionID, loc.Lat, loc.Lng, address, loc.UpdatedAt)
 	case session.KindLive:
 		persistErr = m.store.UpdateParticipantLive(ctx, participantID, loc)
+		if persistErr == nil && (session.ValidTransportMode(extra.TransportMode) || extra.ETASeconds != nil) {
+			persistErr = m.store.UpdateParticipantTransport(ctx, participantID, transportMode, etaSeconds)
+		}
 	}
 	if persistErr != nil && m.log != nil {
 		// メモリ上の状態（＝ライブ配信の内容）は既に正しく、次回の更新で
 		// 古い DB の行はどのみち上書きされるため、永続化の失敗だけで
 		// ライブ更新自体を失敗扱いにはしない（v1からの方針を踏襲）。
 		m.log.Error("persist location update failed", "session", sessionID, "participant", participantID, "err", persistErr)
+	}
+	if arrived {
+		if err := m.store.UpdateParticipantArrival(ctx, participantID, *arrivedAt); err != nil && m.log != nil {
+			m.log.Error("persist arrival failed", "session", sessionID, "participant", participantID, "err", err)
+		}
 	}
 
 	msg := peerLocationMsg{
@@ -415,7 +493,134 @@ func (m *Manager) UpdateLocation(ctx context.Context, sessionID, participantID s
 		Lng:           loc.Lng,
 		Accuracy:      loc.Accuracy,
 		Address:       address,
+		TransportMode: transportMode,
+		ETASeconds:    etaSeconds,
+		RoutePolyline: extra.RoutePolyline,
+		RouteSteps:    extra.RouteSteps,
 		UpdatedAt:     loc.UpdatedAt,
+	}
+	for _, c := range peers {
+		_ = c.Send(msg)
+	}
+
+	if arrived {
+		arrivedMsg := participantArrivedMsg{
+			Type:          EventParticipantArrived,
+			ParticipantID: participantID,
+			DisplayName:   displayName,
+			ArrivedAt:     *arrivedAt,
+		}
+		for _, c := range allConns { // 到着した本人にも通知する（サーバー判定の結果を確認できるように）
+			_ = c.Send(arrivedMsg)
+		}
+	}
+	return nil
+}
+
+// UpdateTransport は transport_update メッセージ（仕様書§7、GPS更新を伴わない
+// 移動手段のみの変更）を反映する。既に送信済みのライブ位置があれば、それを
+// 使って peer_location 相当のブロードキャストを再送する（位置は変えず
+// transportMode/etaSecondsだけ更新した形で他参加者に伝える）。ライブ位置が
+// まだ無い参加者（初回GPS取得前）の場合はブロードキャストしない（次に
+// location_update が届いた時点で反映される）。
+func (m *Manager) UpdateTransport(ctx context.Context, sessionID, participantID string, transportMode session.TransportMode, etaSeconds *int) error {
+	if !session.ValidTransportMode(transportMode) {
+		return session.ErrForbidden
+	}
+
+	m.mu.Lock()
+	r, ok := m.rooms[sessionID]
+	m.mu.Unlock()
+	if !ok {
+		return session.ErrNotFound
+	}
+
+	r.mu.Lock()
+	self, ok := r.participants[participantID]
+	if !ok {
+		r.mu.Unlock()
+		return session.ErrNotFound
+	}
+	self.TransportMode = transportMode
+	if etaSeconds != nil {
+		self.ETASeconds = etaSeconds
+	}
+	live := self.Live
+	role, displayName, avatarIcon, effectiveETA := self.Role, self.DisplayName, self.AvatarIcon, self.ETASeconds
+	peers := otherConns(r, participantID)
+	r.mu.Unlock()
+
+	if err := m.store.UpdateParticipantTransport(ctx, participantID, transportMode, etaSeconds); err != nil && m.log != nil {
+		m.log.Error("persist transport update failed", "session", sessionID, "participant", participantID, "err", err)
+	}
+
+	if live == nil {
+		return nil // まだライブ位置が無いので、他参加者へ知らせる地図上の対象がない
+	}
+	msg := peerLocationMsg{
+		Type:          EventPeerLocation,
+		ParticipantID: participantID,
+		Role:          role,
+		DisplayName:   displayName,
+		AvatarIcon:    avatarIcon,
+		Kind:          session.KindLive,
+		Lat:           live.Lat,
+		Lng:           live.Lng,
+		Accuracy:      live.Accuracy,
+		TransportMode: transportMode,
+		ETASeconds:    effectiveETA,
+		UpdatedAt:     live.UpdatedAt,
+	}
+	for _, c := range peers {
+		_ = c.Send(msg)
+	}
+	return nil
+}
+
+// SendExpression は expression メッセージ（仕様書§12.1-④⑤）を処理する。
+// 本人以外の接続中参加者へ peer_expression をブロードキャストするのみで、
+// DBには何も保存しない。
+func (m *Manager) SendExpression(sessionID, participantID, kind, text string) error {
+	if kind != "stamp" && kind != "reaction" {
+		return session.ErrForbidden
+	}
+	if kind == "reaction" {
+		text = "" // リアクションはテキストを持たない（仕様書§12.1-⑤）
+	}
+	if utf8.RuneCountInString(text) > MaxExpressionTextLength {
+		return session.ErrForbidden
+	}
+
+	m.mu.Lock()
+	r, ok := m.rooms[sessionID]
+	m.mu.Unlock()
+	if !ok {
+		return session.ErrNotFound
+	}
+
+	r.mu.Lock()
+	self, ok := r.participants[participantID]
+	if !ok {
+		r.mu.Unlock()
+		return session.ErrNotFound
+	}
+	if last, ok := r.expressionCooldown[participantID]; ok && time.Since(last) < ExpressionCooldown {
+		r.mu.Unlock()
+		return session.ErrRateLimited
+	}
+	r.expressionCooldown[participantID] = time.Now()
+	displayName, avatarIcon := self.DisplayName, self.AvatarIcon
+	peers := otherConns(r, participantID)
+	r.mu.Unlock()
+
+	msg := peerExpressionMsg{
+		Type:          "peer_expression",
+		ParticipantID: participantID,
+		DisplayName:   displayName,
+		AvatarIcon:    avatarIcon,
+		Kind:          kind,
+		Text:          text,
+		SentAt:        time.Now().UTC(),
 	}
 	for _, c := range peers {
 		_ = c.Send(msg)
@@ -580,4 +785,28 @@ func otherConns(r *room, participantID string) []Conn {
 		out = append(out, c)
 	}
 	return out
+}
+
+// allConnsIncludingSelf は接続中の全コネクション（本人含む）を返す。
+// 到着通知（仕様書§12.1-①）のみ本人にも送るために使う。
+// 呼び出し元が r.mu を保持している状態で呼ぶこと。
+func allConnsIncludingSelf(r *room) []Conn {
+	out := make([]Conn, 0, len(r.conns))
+	for _, c := range r.conns {
+		if c != nil {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// haversineMeters は2点間の距離をハーバーサイン公式で概算する（メートル単位）。
+// web/lib/geolocation.ts のクライアント側実装と同じ式のGo版。
+func haversineMeters(lat1, lng1, lat2, lng2 float64) float64 {
+	const earthRadiusMeters = 6371000.0
+	toRad := func(d float64) float64 { return d * math.Pi / 180 }
+	dLat := toRad(lat2 - lat1)
+	dLng := toRad(lng2 - lng1)
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) + math.Cos(toRad(lat1))*math.Cos(toRad(lat2))*math.Sin(dLng/2)*math.Sin(dLng/2)
+	return 2 * earthRadiusMeters * math.Asin(math.Sqrt(a))
 }

@@ -5,6 +5,7 @@ package ws
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -112,17 +113,24 @@ type syncPayload struct {
 }
 
 // inboundMsg は認証後にクライアントからサーバーへ送られるフレームの形式
-// （仕様書§5.4）。location_update/profile_update を処理し、
-// transport_update/expression はPhase 4で追加する。
+// （仕様書§5.4）。Kindは location_update("target"/"live") と
+// expression("stamp"/"reaction") の両方で使い回すため、session.Kind型では
+// なくstring型にしている（location_updateの処理側でのみsession.Kind(msg.Kind)
+// へ変換する）。
 type inboundMsg struct {
-	Type        string       `json:"type"`
-	Kind        session.Kind `json:"kind"`
-	Lat         float64      `json:"lat"`
-	Lng         float64      `json:"lng"`
-	Accuracy    float64      `json:"accuracy"`
-	Address     string       `json:"address"`
-	DisplayName string       `json:"displayName"` // profile_update 用
-	AvatarIcon  string       `json:"avatarIcon"`  // profile_update 用
+	Type          string          `json:"type"`
+	Kind          string          `json:"kind"`
+	Lat           float64         `json:"lat"`
+	Lng           float64         `json:"lng"`
+	Accuracy      float64         `json:"accuracy"`
+	Address       string          `json:"address"`
+	DisplayName   string          `json:"displayName"`   // profile_update 用
+	AvatarIcon    string          `json:"avatarIcon"`    // profile_update 用
+	TransportMode string          `json:"transportMode"` // location_update(kind=live)/transport_update 用
+	ETASeconds    *int            `json:"etaSeconds"`    // location_update(kind=live)/transport_update 用
+	RoutePolyline string          `json:"routePolyline"` // location_update(kind=live, 電車モード) 用
+	RouteSteps    json.RawMessage `json:"routeSteps"`    // location_update(kind=live, 電車モード) 用
+	Text          string          `json:"text"`          // expression(kind=stamp) 用
 }
 
 // serve は /ws への接続1本ぶんの処理全体を担う。
@@ -193,16 +201,29 @@ func (h *Handler) serve(c *gin.Context) {
 				Accuracy:  msg.Accuracy,
 				UpdatedAt: time.Now().UTC(),
 			}
-			if err := h.hub.UpdateLocation(ctx, auth.SessionID, self.ID, msg.Kind, loc, msg.Address); err != nil {
+			extra := hub.LiveExtras{
+				TransportMode: session.TransportMode(msg.TransportMode),
+				ETASeconds:    msg.ETASeconds,
+				RoutePolyline: msg.RoutePolyline,
+				RouteSteps:    msg.RouteSteps,
+			}
+			if err := h.hub.UpdateLocation(ctx, auth.SessionID, self.ID, session.Kind(msg.Kind), loc, msg.Address, extra); err != nil {
 				h.log.Warn("rejected location update", "session", auth.SessionID, "participant", self.ID, "err", err)
+			}
+		case "transport_update":
+			if err := h.hub.UpdateTransport(ctx, auth.SessionID, self.ID, session.TransportMode(msg.TransportMode), msg.ETASeconds); err != nil {
+				_ = conn.Send(map[string]string{"type": "error", "message": "invalid transportMode"})
 			}
 		case "profile_update":
 			if err := h.hub.UpdateProfile(ctx, auth.SessionID, self.ID, msg.DisplayName, msg.AvatarIcon); err != nil {
 				_ = conn.Send(map[string]string{"type": "error", "message": profileUpdateErrorMessage(err)})
 			}
+		case "expression":
+			if err := h.hub.SendExpression(auth.SessionID, self.ID, msg.Kind, msg.Text); err != nil {
+				_ = conn.Send(map[string]string{"type": "error", "message": expressionErrorMessage(err)})
+			}
 		default:
-			// transport_update / expression はPhase 4で追加する前提で switch 文に
-			// してある。未知の type は現時点では無視する。
+			// 未知の type は無視する。
 		}
 	}
 
@@ -232,6 +253,19 @@ func profileUpdateErrorMessage(err error) string {
 		return "displayName and avatarIcon are invalid"
 	default:
 		return "failed to update profile"
+	}
+}
+
+// expressionErrorMessage は hub.SendExpression のエラーを、クライアントへ送る
+// 簡潔な文言に変換する。
+func expressionErrorMessage(err error) string {
+	switch {
+	case errors.Is(err, session.ErrRateLimited):
+		return "expressions are limited to once every 3 seconds"
+	case errors.Is(err, session.ErrForbidden):
+		return "invalid expression"
+	default:
+		return "failed to send expression"
 	}
 }
 

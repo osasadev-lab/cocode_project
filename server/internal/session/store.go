@@ -54,6 +54,12 @@ type Store interface {
 	// （共有中の変更、仕様書§14.5）。
 	UpdateParticipantProfile(ctx context.Context, participantID, displayName, avatarIcon string) error
 
+	// UpdateParticipantTransport は参加者の移動手段・ETAを更新する（仕様書§7, §9）。
+	UpdateParticipantTransport(ctx context.Context, participantID string, transportMode TransportMode, etaSeconds *int) error
+
+	// UpdateParticipantArrival は参加者の到着時刻を記録する（仕様書§12.1-①）。
+	UpdateParticipantArrival(ctx context.Context, participantID string, arrivedAt time.Time) error
+
 	// Delete はセッションを削除する（participants は ON DELETE CASCADE で連動削除）。
 	Delete(ctx context.Context, id string) error
 }
