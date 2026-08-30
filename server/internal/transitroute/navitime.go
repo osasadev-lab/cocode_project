@@ -9,18 +9,24 @@ import (
 	"time"
 )
 
-const navitimeHost = "navitime-transport.p.rapidapi.com"
-const navitimeEndpoint = "https://" + navitimeHost + "/v1/route_transit"
+const navitimeHost = "navitime-route-totalnavi.p.rapidapi.com"
+const navitimeEndpoint = "https://" + navitimeHost + "/route_transit"
 
-// NavitimeClient はNAVITIME乗換検索API(RapidAPI経由)を呼び出す（仕様書§7.1.3）。
-// 緯度経度をそのまま指定でき、GeoJSON形式の経路シェイプ・路線名・乗換駅名を
-// 取得できるため、cocodeの電車ETAプロバイダとして優先的に使う。
+// jst is used to format start_time in local Japan time, since NAVITIME's
+// route search is timetable-relative. FixedZone avoids depending on the
+// container image shipping IANA tzdata.
+var jst = time.FixedZone("JST", 9*60*60)
+
+// NavitimeClient はNAVITIME乗換検索API「NAVITIME Route(totalnavi)」
+// (RapidAPI経由)を呼び出す（仕様書§7.1.3）。緯度経度をそのまま指定でき、
+// 路線名・乗換駅名を取得できるため、cocodeの電車ETAプロバイダとして優先的
+// に使う。2026-08-30時点でRapidAPIサブスクリプション上の実レスポンスで
+// 動作確認済み(Basicプラン、500回/月)。
 //
-// 注意(実装時に確認すること): ホスト名・レスポンスの正確なフィールド階層は
-// 公式ドキュメントの記載に基づく設計であり、実際のレスポンスでの最終確認が
-// 済んでいない(2026-08-30時点、アクセスキー未取得のため)。最初の実リクエスト
-// で構造が異なることが分かった場合は、navitimeResponseのタグを実際のレスポン
-// スに合わせて修正すること。
+// 注意: このAPIのroute_transitエンドポイントはルート形状(polyline)を
+// 返さない。形状は別エンドポイント/shape_transitで取得する必要があるが、
+// 無料枠の呼び出し回数を消費するため、現時点では呼び出していない
+// (ジョルダン同様、Polylineは空文字のまま)。
 type NavitimeClient struct {
 	apiKey string
 	http   *http.Client
@@ -33,7 +39,7 @@ func NewNavitimeClient(apiKey string) *NavitimeClient {
 func (c *NavitimeClient) Name() string     { return "navitime" }
 func (c *NavitimeClient) Configured() bool { return c.apiKey != "" }
 
-// --- レスポンスの内部表現(NAVITIME route_transitの生JSON形状) ---
+// --- レスポンスの内部表現(NAVITIME Route(totalnavi) route_transitの実レスポンス形状) ---
 
 type navitimeResponse struct {
 	Items []struct {
@@ -42,16 +48,24 @@ type navitimeResponse struct {
 				Time int `json:"time"` // 分単位
 			} `json:"move"`
 		} `json:"summary"`
-		Sections []struct {
-			Type      string `json:"type"` // "point" | "move"
-			Move      string `json:"move"` // "walk" | "local_train" | "train" 等
-			LineName  string `json:"line_name"`
-			CallingAt []struct {
-				Name string `json:"name"`
-			} `json:"calling_at"`
-		} `json:"sections"`
-		Shape json.RawMessage `json:"shape"` // GeoJSON形式(shape=trueパラメータで取得)
+		Sections []navitimeSection `json:"sections"`
 	} `json:"items"`
+}
+
+// navitimeSection: type="point"の要素は駅・出発地・目的地1件を表し、
+// type="move"の要素はその前後2つのpointの間の移動(徒歩 or 乗車)を表す。
+// calling_atはmove.transport配下(options=railway_calling_atで取得)。
+type navitimeSection struct {
+	Type      string `json:"type"` // "point" | "move"
+	Name      string `json:"name"` // point: 駅名、または"start"/"goal"
+	Move      string `json:"move"` // move: "walk" | "local_train" | "train" 等
+	LineName  string `json:"line_name"`
+	Distance  int    `json:"distance"` // メートル
+	Transport *struct {
+		CallingAt []struct {
+			Name string `json:"name"`
+		} `json:"calling_at"`
+	} `json:"transport"`
 }
 
 // ComputeRoute は from から to への電車経路を1件取得する。
@@ -59,8 +73,9 @@ func (c *NavitimeClient) ComputeRoute(ctx context.Context, from, to LatLng) (*Ro
 	q := url.Values{}
 	q.Set("start", fmt.Sprintf("%f,%f", from.Lat, from.Lng))
 	q.Set("goal", fmt.Sprintf("%f,%f", to.Lat, to.Lng))
-	q.Set("start_time", time.Now().Format(time.RFC3339))
-	q.Set("shape", "true")
+	q.Set("datum", "wgs84")
+	q.Set("start_time", time.Now().In(jst).Format("2006-01-02T15:04:05"))
+	q.Set("limit", "1")
 	q.Set("options", "railway_calling_at")
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, navitimeEndpoint+"?"+q.Encode(), nil)
@@ -90,26 +105,32 @@ func (c *NavitimeClient) ComputeRoute(ctx context.Context, from, to LatLng) (*Ro
 	item := parsed.Items[0]
 
 	var steps []Step
-	for _, sec := range item.Sections {
+	for i, sec := range item.Sections {
 		if sec.Type != "move" {
 			continue
 		}
 		if sec.Move == "walk" {
-			steps = append(steps, Step{Kind: "walk"})
+			steps = append(steps, Step{Kind: "walk", DistanceMeters: sec.Distance})
 			continue
 		}
-		step := Step{Kind: "transit", Line: sec.LineName}
-		if n := len(sec.CallingAt); n > 0 {
-			step.DepartureStop = sec.CallingAt[0].Name
-			step.ArrivalStop = sec.CallingAt[n-1].Name
-			step.NumStops = n - 1
+		step := Step{Kind: "transit", Line: sec.LineName, DistanceMeters: sec.Distance}
+		// 前後の"point"要素が乗車駅・降車駅にあたる(実レスポンスでは
+		// calling_atに降車駅自体は含まれず、途中停車駅のみが並ぶため)。
+		if i > 0 && item.Sections[i-1].Type == "point" {
+			step.DepartureStop = item.Sections[i-1].Name
+		}
+		if i+1 < len(item.Sections) && item.Sections[i+1].Type == "point" {
+			step.ArrivalStop = item.Sections[i+1].Name
+		}
+		if sec.Transport != nil {
+			step.NumStops = len(sec.Transport.CallingAt) + 1
 		}
 		steps = append(steps, step)
 	}
 
 	return &Route{
 		ETASeconds: item.Summary.Move.Time * 60,
-		Polyline:   string(item.Shape), // GeoJSON文字列のまま保持(Google Encoded Polylineとは形式が異なる点に注意)
+		Polyline:   "", // /shape_transitは無料枠を消費するため現時点では呼び出さない
 		Steps:      steps,
 	}, nil
 }
