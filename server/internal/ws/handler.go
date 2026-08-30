@@ -112,15 +112,17 @@ type syncPayload struct {
 }
 
 // inboundMsg は認証後にクライアントからサーバーへ送られるフレームの形式
-// （仕様書§5.4）。Phase 2時点では location_update のみ処理し、
-// transport_update/expression/profile_update はPhase 3〜5で追加する。
+// （仕様書§5.4）。location_update/profile_update を処理し、
+// transport_update/expression はPhase 4で追加する。
 type inboundMsg struct {
-	Type     string       `json:"type"`
-	Kind     session.Kind `json:"kind"`
-	Lat      float64      `json:"lat"`
-	Lng      float64      `json:"lng"`
-	Accuracy float64      `json:"accuracy"`
-	Address  string       `json:"address"`
+	Type        string       `json:"type"`
+	Kind        session.Kind `json:"kind"`
+	Lat         float64      `json:"lat"`
+	Lng         float64      `json:"lng"`
+	Accuracy    float64      `json:"accuracy"`
+	Address     string       `json:"address"`
+	DisplayName string       `json:"displayName"` // profile_update 用
+	AvatarIcon  string       `json:"avatarIcon"`  // profile_update 用
 }
 
 // serve は /ws への接続1本ぶんの処理全体を担う。
@@ -194,9 +196,13 @@ func (h *Handler) serve(c *gin.Context) {
 			if err := h.hub.UpdateLocation(ctx, auth.SessionID, self.ID, msg.Kind, loc, msg.Address); err != nil {
 				h.log.Warn("rejected location update", "session", auth.SessionID, "participant", self.ID, "err", err)
 			}
+		case "profile_update":
+			if err := h.hub.UpdateProfile(ctx, auth.SessionID, self.ID, msg.DisplayName, msg.AvatarIcon); err != nil {
+				_ = conn.Send(map[string]string{"type": "error", "message": profileUpdateErrorMessage(err)})
+			}
 		default:
-			// transport_update / expression / profile_update はPhase 3〜5で追加する
-			// 前提で switch 文にしてある。未知の type は現時点では無視する。
+			// transport_update / expression はPhase 4で追加する前提で switch 文に
+			// してある。未知の type は現時点では無視する。
 		}
 	}
 
@@ -210,9 +216,22 @@ func joinErrorMessage(err error) string {
 	case errors.Is(err, session.ErrParticipantLimit):
 		return "session is full"
 	case errors.Is(err, session.ErrForbidden):
-		return "displayName and avatarIcon are required"
+		return "displayName and avatarIcon are required and must be valid"
 	default:
 		return "session not found or expired"
+	}
+}
+
+// profileUpdateErrorMessage は hub.UpdateProfile のエラーを、クライアントへ送る
+// 簡潔な文言に変換する（joinErrorMessage と同じパターン）。
+func profileUpdateErrorMessage(err error) string {
+	switch {
+	case errors.Is(err, session.ErrRateLimited):
+		return "profile updates are limited to once every 5 seconds"
+	case errors.Is(err, session.ErrForbidden):
+		return "displayName and avatarIcon are invalid"
+	default:
+		return "failed to update profile"
 	}
 }
 

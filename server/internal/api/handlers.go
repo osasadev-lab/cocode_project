@@ -62,8 +62,8 @@ type createSessionResp struct {
 
 // createSession は POST /api/sessions を実装する。目的地は後から設定できる
 // 任意項目ではなく必須項目である。仕様書§5.1により、ホストが目的地を決める
-// まで共有リンクは存在してはならないため。表示名・アイコンは非空文字チェック
-// のみ行い、最大文字数やアイコンのホワイトリスト検証はPhase 3で追加する。
+// まで共有リンクは存在してはならないため。表示名・アイコンは
+// session.ValidDisplayName/ValidAvatarIcon で検証する(仕様書§6, §6.1)。
 func (h *Handler) createSession(c *gin.Context) {
 	var req createSessionReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -74,8 +74,12 @@ func (h *Handler) createSession(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "lat and lng are required and must be valid coordinates"})
 		return
 	}
-	if req.DisplayName == "" || req.AvatarIcon == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "displayName and avatarIcon are required"})
+	if !session.ValidDisplayName(req.DisplayName) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "displayName is required and must be 20 characters or fewer"})
+		return
+	}
+	if !session.ValidAvatarIcon(req.AvatarIcon) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "avatarIcon must be one of the supported icons"})
 		return
 	}
 

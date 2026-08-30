@@ -15,6 +15,9 @@ var (
 	// ErrForbidden はロール上許可されない操作が要求された場合に返される
 	// （例: ゲストトークンでの終了操作、表示名/アイコン未指定での新規ゲスト参加）。
 	ErrForbidden = errors.New("session: operation not allowed for this role")
+	// ErrRateLimited は短時間に同じ操作を繰り返した場合に返される
+	// （§12.1のexpressionクールダウンと同様のパターン、§14.5のprofile_updateで使用）。
+	ErrRateLimited = errors.New("session: rate limited")
 )
 
 // MaxParticipants はセッションあたりの参加者数上限（ホスト含む、仕様書§5.2）。
@@ -46,6 +49,10 @@ type Store interface {
 
 	// UpdateParticipantLive は参加者のライブ位置を更新する。
 	UpdateParticipantLive(ctx context.Context, participantID string, loc LocationState) error
+
+	// UpdateParticipantProfile は参加者の表示名・アイコンを更新する
+	// （共有中の変更、仕様書§14.5）。
+	UpdateParticipantProfile(ctx context.Context, participantID, displayName, avatarIcon string) error
 
 	// Delete はセッションを削除する（participants は ON DELETE CASCADE で連動削除）。
 	Delete(ctx context.Context, id string) error

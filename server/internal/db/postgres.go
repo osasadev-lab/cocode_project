@@ -267,6 +267,15 @@ func (p *Postgres) UpdateParticipantLive(ctx context.Context, participantID stri
 	return nil
 }
 
+// UpdateParticipantProfile は参加者の表示名・アイコンを更新する（仕様書§14.5）。
+func (p *Postgres) UpdateParticipantProfile(ctx context.Context, participantID, displayName, avatarIcon string) error {
+	const q = `update participants set display_name = $1, avatar_icon = $2 where id = $3`
+	if _, err := p.db.ExecContext(ctx, q, displayName, avatarIcon, participantID); err != nil {
+		return fmt.Errorf("update participant profile: %w", err)
+	}
+	return nil
+}
+
 // Delete はセッションを削除する（既に削除済みでもエラーにはならない。冪等）。
 // participants は ON DELETE CASCADE で連動削除される。
 func (p *Postgres) Delete(ctx context.Context, id string) error {

@@ -30,12 +30,17 @@ type Conn interface {
 
 // イベント種別の文字列定数（仕様書§5.4）。
 const (
-	EventPeerLocation      = "peer_location"
-	EventParticipantJoined = "participant_joined"
-	EventParticipantLeft   = "participant_left"
-	EventSessionEnded      = "session_ended"
-	EventSessionExpired    = "session_expired"
+	EventPeerLocation       = "peer_location"
+	EventParticipantJoined  = "participant_joined"
+	EventParticipantLeft    = "participant_left"
+	EventParticipantUpdated = "participant_updated"
+	EventSessionEnded       = "session_ended"
+	EventSessionExpired     = "session_expired"
 )
+
+// ProfileUpdateCooldown は同一参加者からの profile_update を受け付ける最短間隔
+// （乱用対策、仕様書§14.5。§12.1のexpressionクールダウンと同じ考え方）。
+const ProfileUpdateCooldown = 5 * time.Second
 
 // participantSummary は participant_joined ブロードキャストに乗せる、
 // 新規参加者の公開情報（仕様書§5.4）。sync フレーム用のより詳細な表現
@@ -73,6 +78,14 @@ type participantLeftMsg struct {
 	DisplayName   string `json:"displayName"`
 }
 
+type participantUpdatedMsg struct {
+	Type          string    `json:"type"`
+	ParticipantID string    `json:"participantId"`
+	DisplayName   string    `json:"displayName"`
+	AvatarIcon    string    `json:"avatarIcon"`
+	UpdatedAt     time.Time `json:"updatedAt"`
+}
+
 type reasonEventMsg struct {
 	Type   string `json:"type"`
 	Reason string `json:"reason"`
@@ -82,11 +95,12 @@ type reasonEventMsg struct {
 // v1の connA/connB 固定フィールドを、participantId をキーにした map に置き換える
 // （仕様書§5.4、不具合修正§0の土台）。
 type room struct {
-	mu           sync.Mutex
-	rec          *session.Record
-	participants map[string]*session.Participant // participantId -> メタ情報のキャッシュ
-	conns        map[string]Conn                 // participantId -> 接続中のコネクション（未接続なら不在）
-	timer        *time.Timer
+	mu              sync.Mutex
+	rec             *session.Record
+	participants    map[string]*session.Participant // participantId -> メタ情報のキャッシュ
+	conns           map[string]Conn                 // participantId -> 接続中のコネクション（未接続なら不在）
+	profileCooldown map[string]time.Time            // participantId -> 直近の profile_update 時刻（仕様書§14.5）
+	timer           *time.Timer
 }
 
 // Manager はこのプロセス上の全ての稼働中セッション（room）を所有・管理する。
@@ -114,10 +128,11 @@ func (m *Manager) newRoom(rec *session.Record, participants []*session.Participa
 		pm[p.ID] = p
 	}
 	return &room{
-		rec:          rec,
-		participants: pm,
-		conns:        make(map[string]Conn),
-		timer:        time.AfterFunc(time.Until(rec.ExpiresAt), func() { m.expire(id) }),
+		rec:             rec,
+		participants:    pm,
+		conns:           make(map[string]Conn),
+		profileCooldown: make(map[string]time.Time),
+		timer:           time.AfterFunc(time.Until(rec.ExpiresAt), func() { m.expire(id) }),
 	}
 }
 
@@ -257,7 +272,7 @@ func (m *Manager) Join(ctx context.Context, sessionID, token, participantID, dis
 			}
 			self = p
 		} else {
-			if displayName == "" || avatarIcon == "" {
+			if !session.ValidDisplayName(displayName) || !session.ValidAvatarIcon(avatarIcon) {
 				r.mu.Unlock()
 				return nil, nil, nil, session.ErrForbidden
 			}
@@ -401,6 +416,57 @@ func (m *Manager) UpdateLocation(ctx context.Context, sessionID, participantID s
 		Accuracy:      loc.Accuracy,
 		Address:       address,
 		UpdatedAt:     loc.UpdatedAt,
+	}
+	for _, c := range peers {
+		_ = c.Send(msg)
+	}
+	return nil
+}
+
+// UpdateProfile は profile_update メッセージ（仕様書§14.5）を反映する。
+// 共有中でも表示名・アイコンをいつでも変更できるが、乱用防止のため
+// 参加者ごとに ProfileUpdateCooldown 間隔でのみ受け付ける。
+func (m *Manager) UpdateProfile(ctx context.Context, sessionID, participantID, displayName, avatarIcon string) error {
+	if !session.ValidDisplayName(displayName) || !session.ValidAvatarIcon(avatarIcon) {
+		return session.ErrForbidden
+	}
+
+	m.mu.Lock()
+	r, ok := m.rooms[sessionID]
+	m.mu.Unlock()
+	if !ok {
+		return session.ErrNotFound
+	}
+
+	r.mu.Lock()
+	self, ok := r.participants[participantID]
+	if !ok {
+		r.mu.Unlock()
+		return session.ErrNotFound
+	}
+	if last, ok := r.profileCooldown[participantID]; ok && time.Since(last) < ProfileUpdateCooldown {
+		r.mu.Unlock()
+		return session.ErrRateLimited
+	}
+	r.profileCooldown[participantID] = time.Now()
+	self.DisplayName = displayName
+	self.AvatarIcon = avatarIcon
+	updatedAt := time.Now().UTC()
+	peers := otherConns(r, participantID)
+	r.mu.Unlock()
+
+	if err := m.store.UpdateParticipantProfile(ctx, participantID, displayName, avatarIcon); err != nil && m.log != nil {
+		// 位置情報更新時と同じ方針: メモリ上の状態は既に正しく、次回の更新で
+		// どのみち上書きされるため、永続化の失敗だけで操作自体を失敗扱いにはしない。
+		m.log.Error("persist profile update failed", "session", sessionID, "participant", participantID, "err", err)
+	}
+
+	msg := participantUpdatedMsg{
+		Type:          EventParticipantUpdated,
+		ParticipantID: participantID,
+		DisplayName:   displayName,
+		AvatarIcon:    avatarIcon,
+		UpdatedAt:     updatedAt,
 	}
 	for _, c := range peers {
 		_ = c.Send(msg)
