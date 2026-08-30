@@ -20,8 +20,8 @@ import (
 	"github.com/osasadev-lab/cocode_project/server/internal/config"
 	"github.com/osasadev-lab/cocode_project/server/internal/db"
 	"github.com/osasadev-lab/cocode_project/server/internal/feedbackmail"
-	"github.com/osasadev-lab/cocode_project/server/internal/googleroutes"
 	"github.com/osasadev-lab/cocode_project/server/internal/hub"
+	"github.com/osasadev-lab/cocode_project/server/internal/transitroute"
 	"github.com/osasadev-lab/cocode_project/server/internal/ws"
 )
 
@@ -61,8 +61,14 @@ func main() {
 		c.String(http.StatusOK, "ok")
 	})
 
-	routesClient := googleroutes.NewClient(cfg.GoogleRoutesAPIKey)
-	api.NewHandler(manager, cfg.PublicBaseURL, cfg.RateLimitRPM, routesClient, cfg.TransitRateLimitRPM, logger).Register(engine)
+	// 電車ETAプロバイダ: NAVITIME優先、無料枠超過時はジョルダンへ自動フォール
+	// バック(仕様書§7.1〜§7.1.3)。ジョルダンは審査待ちのため、アクセスキー未
+	// 設定の間はConfigured()がfalseを返しRouterから自動的にスキップされる。
+	navitimeClient := transitroute.NewNavitimeClient(cfg.NavitimeAPIKey)
+	stationResolver := transitroute.NewMapTilerStationResolver(cfg.MapTilerKey)
+	jorudanClient := transitroute.NewJorudanClient(cfg.JorudanAccessKey, cfg.JorudanBaseURL, stationResolver)
+	transitRouter := transitroute.NewRouter(navitimeClient, jorudanClient, store, logger)
+	api.NewHandler(manager, cfg.PublicBaseURL, cfg.RateLimitRPM, transitRouter, cfg.TransitRateLimitRPM, logger).Register(engine)
 	ws.NewHandler(manager, logger).Register(engine)
 
 	mailCfg := feedbackmail.Config{

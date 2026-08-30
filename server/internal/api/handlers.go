@@ -10,9 +10,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/osasadev-lab/cocode_project/server/internal/googleroutes"
 	"github.com/osasadev-lab/cocode_project/server/internal/hub"
 	"github.com/osasadev-lab/cocode_project/server/internal/session"
+	"github.com/osasadev-lab/cocode_project/server/internal/transitroute"
 )
 
 // Handler は REST エンドポイント群の依存関係をまとめて保持する構造体。
@@ -21,18 +21,18 @@ type Handler struct {
 	publicBaseURL  string
 	log            *slog.Logger
 	createLimiter  *rateLimiter
-	routes         *googleroutes.Client
+	transit        *transitroute.Router
 	transitLimiter *rateLimiter
 }
 
 // NewHandler は Handler を生成する。
-func NewHandler(h *hub.Manager, publicBaseURL string, rateLimitPerMinute int, routes *googleroutes.Client, transitRateLimitPerMinute int, log *slog.Logger) *Handler {
+func NewHandler(h *hub.Manager, publicBaseURL string, rateLimitPerMinute int, transit *transitroute.Router, transitRateLimitPerMinute int, log *slog.Logger) *Handler {
 	return &Handler{
 		hub:            h,
 		publicBaseURL:  publicBaseURL,
 		log:            log,
 		createLimiter:  newRateLimiter(rateLimitPerMinute, time.Minute),
-		routes:         routes,
+		transit:        transit,
 		transitLimiter: newRateLimiter(transitRateLimitPerMinute, time.Minute),
 	}
 }
@@ -238,20 +238,16 @@ type etaTransitReq struct {
 }
 
 type etaTransitResp struct {
-	ETASeconds int                        `json:"etaSeconds"`
-	Polyline   string                     `json:"polyline"`
-	Steps      []googleroutes.TransitStep `json:"steps"`
+	ETASeconds int                 `json:"etaSeconds"`
+	Polyline   string              `json:"polyline"`
+	Steps      []transitroute.Step `json:"steps"`
 }
 
-// etaTransit は POST /api/eta/transit を実装する（仕様書§7.1）。
-// Google Routes APIのAPIキーはフロントエンドへ露出させないため、
-// 必ずこのバックエンド経由で呼び出す。
+// etaTransit は POST /api/eta/transit を実装する（仕様書§7.1〜§7.1.3）。
+// NAVITIME/ジョルダンいずれのAPIキーもフロントエンドへ露出させないため、
+// 必ずこのバックエンド経由で呼び出す。どちらのプロバイダを使うかはh.transit
+// (transitroute.Router)が内部で判断し、このハンドラは意識しない。
 func (h *Handler) etaTransit(c *gin.Context) {
-	if h.routes == nil || !h.routes.Configured() {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "transit ETA is not configured"})
-		return
-	}
-
 	var req etaTransitReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON body"})
@@ -262,12 +258,16 @@ func (h *Handler) etaTransit(c *gin.Context) {
 		return
 	}
 
-	route, err := h.routes.ComputeTransitRoute(c.Request.Context(),
-		googleroutes.LatLng{Lat: req.FromLat, Lng: req.FromLng},
-		googleroutes.LatLng{Lat: req.ToLat, Lng: req.ToLng},
+	route, err := h.transit.ComputeRoute(c.Request.Context(),
+		transitroute.LatLng{Lat: req.FromLat, Lng: req.FromLng},
+		transitroute.LatLng{Lat: req.ToLat, Lng: req.ToLng},
 	)
-	if errors.Is(err, googleroutes.ErrNoRoute) {
+	if errors.Is(err, transitroute.ErrNoRoute) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "no transit route found"})
+		return
+	}
+	if errors.Is(err, transitroute.ErrNoProviderAvailable) {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "transit ETA is not configured"})
 		return
 	}
 	if err != nil {

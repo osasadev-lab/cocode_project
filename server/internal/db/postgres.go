@@ -72,6 +72,13 @@ create table if not exists feedbacks (
   context    text,
   created_at timestamptz not null default now()
 );
+
+create table if not exists transit_api_usage (
+  provider   text not null,
+  year_month text not null,
+  count      integer not null default 0,
+  primary key (provider, year_month)
+);
 `
 
 // Postgres は Supabase 上の Postgres を実体とする session.Store の実装。
@@ -316,6 +323,36 @@ func (p *Postgres) InsertFeedback(ctx context.Context, message, replyTo, context
 		return "", time.Time{}, fmt.Errorf("insert feedback: %w", err)
 	}
 	return id, createdAt, nil
+}
+
+// IncrementUsage は指定プロバイダ・年月の電車ETA API利用回数を1増やし、
+// 増加後の値を返す（仕様書§7.1.2、transitroute.UsageStoreを満たす）。
+func (p *Postgres) IncrementUsage(ctx context.Context, provider, yearMonth string) (int, error) {
+	const q = `
+		insert into transit_api_usage (provider, year_month, count)
+		values ($1, $2, 1)
+		on conflict (provider, year_month) do update set count = transit_api_usage.count + 1
+		returning count
+	`
+	var count int
+	if err := p.db.QueryRowContext(ctx, q, provider, yearMonth).Scan(&count); err != nil {
+		return 0, fmt.Errorf("increment transit api usage: %w", err)
+	}
+	return count, nil
+}
+
+// GetUsage は指定プロバイダ・年月の電車ETA API利用回数を返す（未記録なら0）。
+func (p *Postgres) GetUsage(ctx context.Context, provider, yearMonth string) (int, error) {
+	const q = `select count from transit_api_usage where provider = $1 and year_month = $2`
+	var count int
+	err := p.db.QueryRowContext(ctx, q, provider, yearMonth).Scan(&count)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("get transit api usage: %w", err)
+	}
+	return count, nil
 }
 
 // Delete はセッションを削除する（既に削除済みでもエラーにはならない。冪等）。

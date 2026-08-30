@@ -15,10 +15,14 @@ type Config struct {
 	SessionTTL    time.Duration
 	RateLimitRPM  int // POST /api/sessions requests allowed per IP per minute
 
-	// 電車ETA(仕様書§7.1)。GoogleRoutesAPIKeyが空でも起動でき、その場合は
+	// 電車ETA(仕様書§7.1〜§7.1.3)。NAVITIMEを優先し、無料枠超過時はジョルダン
+	// へ自動フォールバックする。いずれも空文字で起動でき、その場合は
 	// POST /api/eta/transit が503を返すだけで他機能に影響しない。
-	GoogleRoutesAPIKey  string
-	TransitRateLimitRPM int // POST /api/eta/transit requests allowed per IP per minute
+	NavitimeAPIKey      string // RapidAPI経由のNAVITIME乗換検索APIキー
+	JorudanAccessKey    string // ジョルダン乗換案内オープンAPIのアクセスキー(審査完了後に設定)
+	JorudanBaseURL      string // 通常は空文字のままでよい(NewJorudanClientの既定値を使う)
+	MapTilerKey         string // ジョルダン利用時の座標→駅名解決に使う(§7.1.3、既存のNEXT_PUBLIC_MAPTILER_KEYと同じ値)
+	TransitRateLimitRPM int    // POST /api/eta/transit requests allowed per IP per minute
 
 	// フィードバック通知メール(仕様書§17.2)。SMTPHostが空ならfeedbackmail.Asyncは
 	// 何もせずスキップする(aiboのfeedbackmailパターンを踏襲)。
@@ -52,7 +56,10 @@ func Load() (*Config, error) {
 		SessionTTL:    time.Duration(ttlMinutes) * time.Minute,
 		RateLimitRPM:  rateLimit,
 
-		GoogleRoutesAPIKey:  os.Getenv("GOOGLE_ROUTES_API_KEY"),
+		NavitimeAPIKey:      os.Getenv("NAVITIME_RAPIDAPI_KEY"),
+		JorudanAccessKey:    os.Getenv("JORUDAN_ACCESS_KEY"),
+		JorudanBaseURL:      os.Getenv("JORUDAN_BASE_URL"),
+		MapTilerKey:         os.Getenv("MAPTILER_KEY"),
 		TransitRateLimitRPM: transitRateLimit,
 
 		SMTPHost:            os.Getenv("SMTP_HOST"),
