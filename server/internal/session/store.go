@@ -6,25 +6,47 @@ import (
 	"time"
 )
 
-// ErrNotFound は指定した id のセッションが存在しない（または既に削除済み）場合に返される。
-var ErrNotFound = errors.New("session: not found")
+var (
+	// ErrNotFound は指定した id のセッション、または participantId の参加者が
+	// 存在しない（既に削除済み含む）場合に返される。
+	ErrNotFound = errors.New("session: not found")
+	// ErrParticipantLimit は参加人数上限（MaxParticipants）到達時に返される。
+	ErrParticipantLimit = errors.New("session: participant limit reached")
+	// ErrForbidden はロール上許可されない操作が要求された場合に返される
+	// （例: ゲストトークンでの終了操作、表示名/アイコン未指定での新規ゲスト参加）。
+	ErrForbidden = errors.New("session: operation not allowed for this role")
+)
 
-// Store はセッションを Supabase (Postgres) へ永続化するためのインターフェース。
+// MaxParticipants はセッションあたりの参加者数上限（ホスト含む、仕様書§5.2）。
+const MaxParticipants = 20
+
+// Store はセッション・参加者を Supabase (Postgres) へ永続化するためのインターフェース。
 // データベース資格情報を持てるのはこのインターフェースの実装のみで、
 // ハンドラやインメモリの hub は Postgres へ直接アクセスしない。
 type Store interface {
-	// Insert: トークン・TTL・初期の待ち合わせ地点から新しいセッション行を作成し、
-	// DB が採番した id や created_at を含む完全なレコードを返す。
-	Insert(ctx context.Context, tokenA, tokenB string, ttl time.Duration, target LocationState) (*Record, error)
+	// InsertWithHost はセッションとホスト参加者を1トランザクションで作成する。
+	InsertWithHost(ctx context.Context, tokenHost, tokenGuest string, ttl time.Duration, destLat, destLng float64, destAddress, hostDisplayName, hostAvatarIcon string) (*Record, *Participant, error)
 
-	// Get: id からセッションを読み込む。存在しなければ ErrNotFound を返す。
+	// Get はセッション本体を取得する。存在しなければ ErrNotFound。
 	Get(ctx context.Context, id string) (*Record, error)
 
-	// UpdateLocation: role と kind に対応する位置情報カラム
-	// (loc_a_target / loc_a_live / loc_b_live) を上書きする。
-	UpdateLocation(ctx context.Context, id string, role Role, kind Kind, loc LocationState) error
+	// ListParticipants はセッションに紐づく全参加者を、参加順(joined_at)で取得する。
+	ListParticipants(ctx context.Context, sessionID string) ([]*Participant, error)
 
-	// Delete: セッション行を削除する。冪等な操作であり、
-	// 既に削除済みのセッションを削除してもエラーにはならない。
+	// InsertParticipant は新規ゲスト参加者を作成する。
+	// 上限（MaxParticipants）到達時は ErrParticipantLimit を返す。
+	InsertParticipant(ctx context.Context, sessionID, displayName, avatarIcon string) (*Participant, error)
+
+	// GetParticipant は participantId から参加者を取得する（再接続時の検証用）。
+	// 存在しなければ ErrNotFound。
+	GetParticipant(ctx context.Context, sessionID, participantID string) (*Participant, error)
+
+	// UpdateTarget はセッションの目的地を更新する。
+	UpdateTarget(ctx context.Context, sessionID string, lat, lng float64, address string, updatedAt time.Time) error
+
+	// UpdateParticipantLive は参加者のライブ位置を更新する。
+	UpdateParticipantLive(ctx context.Context, participantID string, loc LocationState) error
+
+	// Delete はセッションを削除する（participants は ON DELETE CASCADE で連動削除）。
 	Delete(ctx context.Context, id string) error
 }

@@ -28,7 +28,7 @@ func Load() (*Config, error) {
 	// 残りの項目は未設定でも動くよう、それぞれデフォルト値を用意する。
 	port := envOrDefault("PORT", "8080")
 	publicBaseURL := envOrDefault("PUBLIC_BASE_URL", "http://localhost:3000")
-	ttlMinutes := envIntOrDefault("SESSION_TTL_MINUTES", 30)
+	ttlMinutes := envIntOrDefault("SESSION_TTL_MINUTES", 60)
 	rateLimit := envIntOrDefault("RATE_LIMIT_RPM", 5)
 
 	return &Config{

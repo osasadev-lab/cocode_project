@@ -1,10 +1,11 @@
 // ws パッケージは cocode のリアルタイム通信を担う。
-// セッションが続く間、双方の参加者が保持し続ける /ws エンドポイントで、
-// ライブ位置情報の更新を双方向にストリーミングする（仕様書§4, §7）。
+// セッションが続く間、ホスト・ゲスト双方が保持し続ける /ws エンドポイントで、
+// ライブ位置情報の更新を配信する（仕様書§5.4）。
 package ws
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -67,33 +68,59 @@ func (h *Handler) Register(r *gin.Engine) {
 }
 
 // authFrame は WebSocket へのアップグレード直後にクライアントが最初に送る
-// 認証メッセージで、セッション id とトークンを運ぶ。これらをクエリ文字列に
-// 含めないことで、Cloud Run のアクセスログに残らないようにしている（仕様書§8-2）。
+// 認証メッセージ（仕様書§5.4）。セッション id・トークンをクエリ文字列に
+// 含めないことで、Cloud Run のアクセスログに残らないようにしている。
+// participantId は再接続時のみ、displayName/avatarIcon は初回参加時のみ必須。
 type authFrame struct {
-	SessionID string `json:"sessionId"`
-	Token     string `json:"token"`
+	SessionID     string `json:"sessionId"`
+	Token         string `json:"token"`
+	ParticipantID string `json:"participantId"`
+	DisplayName   string `json:"displayName"`
+	AvatarIcon    string `json:"avatarIcon"`
+}
+
+// destinationPayload は sync フレームに含める目的地情報。
+type destinationPayload struct {
+	Lat       float64   `json:"lat"`
+	Lng       float64   `json:"lng"`
+	Address   string    `json:"address,omitempty"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// participantPublic は sync フレームで各参加者について配信する公開情報
+// （仕様書§5.4）。Live/ETASeconds は未設定時 JSON 上で null を明示するため
+// omitempty を付けない。
+type participantPublic struct {
+	ID            string                 `json:"id"`
+	Role          session.Role           `json:"role"`
+	DisplayName   string                 `json:"displayName"`
+	AvatarIcon    string                 `json:"avatarIcon"`
+	TransportMode session.TransportMode  `json:"transportMode"`
+	Live          *session.LocationState `json:"live"`
+	ETASeconds    *int                   `json:"etaSeconds"`
+}
+
+// syncPayload は Join 成功直後に送られる初回の "sync" フレームで、
+// クライアントへセッションの現在の完全な状態を渡す。
+type syncPayload struct {
+	Type          string              `json:"type"`
+	Role          session.Role        `json:"role"`
+	ParticipantID string              `json:"participantId"`
+	Destination   destinationPayload  `json:"destination"`
+	ExpiresAt     time.Time           `json:"expiresAt"`
+	Participants  []participantPublic `json:"participants"`
 }
 
 // inboundMsg は認証後にクライアントからサーバーへ送られるフレームの形式
-// （仕様書§7の location_update メッセージ）。
+// （仕様書§5.4）。Phase 2時点では location_update のみ処理し、
+// transport_update/expression/profile_update はPhase 3〜5で追加する。
 type inboundMsg struct {
 	Type     string       `json:"type"`
 	Kind     session.Kind `json:"kind"`
 	Lat      float64      `json:"lat"`
 	Lng      float64      `json:"lng"`
 	Accuracy float64      `json:"accuracy"`
-}
-
-// syncPayload は Join 成功直後に送られる初回の "sync" フレームで、
-// クライアントへセッションの現在の完全な状態を渡す。
-type syncPayload struct {
-	Type       string                 `json:"type"`
-	Role       session.Role           `json:"role"`
-	ExpiresAt  time.Time              `json:"expiresAt"`
-	Target     session.LocationState  `json:"target"`
-	LiveA      *session.LocationState `json:"liveA,omitempty"`
-	LiveB      *session.LocationState `json:"liveB,omitempty"`
-	PeerOnline bool                   `json:"peerOnline"`
+	Address  string       `json:"address"`
 }
 
 // serve は /ws への接続1本ぶんの処理全体を担う。
@@ -122,46 +149,82 @@ func (h *Handler) serve(c *gin.Context) {
 	_ = wsConn.SetReadDeadline(time.Time{})
 
 	ctx := context.Background()
-	rec, role, peerOnline, err := h.hub.Join(ctx, auth.SessionID, auth.Token, conn)
+	rec, self, all, err := h.hub.Join(ctx, auth.SessionID, auth.Token, auth.ParticipantID, auth.DisplayName, auth.AvatarIcon, conn)
 	if err != nil {
-		_ = conn.Send(map[string]string{"type": "error", "message": "session not found or expired"})
+		_ = conn.Send(map[string]string{"type": "error", "message": joinErrorMessage(err)})
 		return
 	}
 
 	// 3. 現在のセッション状態をまとめて送り、クライアントを同期させる。
+	participants := make([]participantPublic, 0, len(all))
+	for _, p := range all {
+		participants = append(participants, toParticipantPublic(p))
+	}
 	if err := conn.Send(syncPayload{
-		Type:       "sync",
-		Role:       role,
-		ExpiresAt:  rec.ExpiresAt,
-		Target:     rec.LocATarget,
-		LiveA:      rec.LocALive,
-		LiveB:      rec.LocBLive,
-		PeerOnline: peerOnline,
+		Type:          "sync",
+		Role:          self.Role,
+		ParticipantID: self.ID,
+		Destination: destinationPayload{
+			Lat:       rec.DestLat,
+			Lng:       rec.DestLng,
+			Address:   rec.DestAddress,
+			UpdatedAt: rec.DestUpdatedAt,
+		},
+		ExpiresAt:    rec.ExpiresAt,
+		Participants: participants,
 	}); err != nil {
-		h.hub.Disconnect(auth.SessionID, role, conn)
+		h.hub.Disconnect(auth.SessionID, self.ID, conn)
 		return
 	}
 
-	// 4. 接続が切れるまで location_update メッセージを受信し続ける。
+	// 4. 接続が切れるまでメッセージを受信し続ける。
 	for {
 		var msg inboundMsg
 		if err := wsConn.ReadJSON(&msg); err != nil {
 			break
 		}
-		if msg.Type != "location_update" {
-			continue
-		}
-		loc := session.LocationState{
-			Lat:       msg.Lat,
-			Lng:       msg.Lng,
-			Accuracy:  msg.Accuracy,
-			UpdatedAt: time.Now().UTC(),
-		}
-		if err := h.hub.UpdateLocation(ctx, auth.SessionID, role, msg.Kind, loc); err != nil {
-			h.log.Warn("rejected location update", "session", auth.SessionID, "role", role, "err", err)
+		switch msg.Type {
+		case "location_update":
+			loc := session.LocationState{
+				Lat:       msg.Lat,
+				Lng:       msg.Lng,
+				Accuracy:  msg.Accuracy,
+				UpdatedAt: time.Now().UTC(),
+			}
+			if err := h.hub.UpdateLocation(ctx, auth.SessionID, self.ID, msg.Kind, loc, msg.Address); err != nil {
+				h.log.Warn("rejected location update", "session", auth.SessionID, "participant", self.ID, "err", err)
+			}
+		default:
+			// transport_update / expression / profile_update はPhase 3〜5で追加する
+			// 前提で switch 文にしてある。未知の type は現時点では無視する。
 		}
 	}
 
 	// 5. 読み取りループを抜けた（＝接続が切れた）ので後始末する。
-	h.hub.Disconnect(auth.SessionID, role, conn)
+	h.hub.Disconnect(auth.SessionID, self.ID, conn)
+}
+
+// joinErrorMessage は hub.Join のエラーを、クライアントへ送る簡潔な文言に変換する。
+func joinErrorMessage(err error) string {
+	switch {
+	case errors.Is(err, session.ErrParticipantLimit):
+		return "session is full"
+	case errors.Is(err, session.ErrForbidden):
+		return "displayName and avatarIcon are required"
+	default:
+		return "session not found or expired"
+	}
+}
+
+// toParticipantPublic は session.Participant を sync フレーム用の公開表現に変換する。
+func toParticipantPublic(p *session.Participant) participantPublic {
+	return participantPublic{
+		ID:            p.ID,
+		Role:          p.Role,
+		DisplayName:   p.DisplayName,
+		AvatarIcon:    p.AvatarIcon,
+		TransportMode: p.TransportMode,
+		Live:          p.Live,
+		ETASeconds:    p.ETASeconds,
+	}
 }

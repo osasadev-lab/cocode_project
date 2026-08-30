@@ -1,5 +1,5 @@
-// api パッケージは cocode の REST API（仕様書§7）を実装する。
-// セッションの作成、再接続時の状態取得、早期終了の3つを担当する。
+// api パッケージは cocode の REST API（仕様書§5.5）を実装する。
+// セッションの作成、状態取得、終了の3つを担当する。
 package api
 
 import (
@@ -42,24 +42,29 @@ func (h *Handler) Register(r *gin.Engine) {
 	r.POST("/api/sessions/:id/end", h.endSession)
 }
 
-// createSessionReq / createSessionResp: POST /api/sessions のリクエスト/レスポンス型。
+// createSessionReq / createSessionResp: POST /api/sessions のリクエスト/レスポンス型
+// （仕様書§5.5、§14.1ステップ5〜6）。
 type createSessionReq struct {
-	Lat float64 `json:"lat"`
-	Lng float64 `json:"lng"`
+	Lat         float64 `json:"lat"`
+	Lng         float64 `json:"lng"`
+	Address     string  `json:"address"`
+	DisplayName string  `json:"displayName"`
+	AvatarIcon  string  `json:"avatarIcon"`
 }
 
 type createSessionResp struct {
-	SessionID string    `json:"sessionId"`
-	TokenA    string    `json:"tokenA"`
-	ShareURL  string    `json:"shareUrl"`
-	ExpiresAt time.Time `json:"expiresAt"`
+	SessionID     string    `json:"sessionId"`
+	TokenHost     string    `json:"tokenHost"`
+	ParticipantID string    `json:"participantId"`
+	ShareURL      string    `json:"shareUrl"`
+	ExpiresAt     time.Time `json:"expiresAt"`
 }
 
-// createSession は POST /api/sessions を実装する。待ち合わせ地点は
-// 後から設定できる任意項目ではなく必須項目である。仕様書§5.1により、
-// A が待ち合わせ場所を決めるまで共有リンクは存在してはならないため。
+// createSession は POST /api/sessions を実装する。目的地は後から設定できる
+// 任意項目ではなく必須項目である。仕様書§5.1により、ホストが目的地を決める
+// まで共有リンクは存在してはならないため。表示名・アイコンは非空文字チェック
+// のみ行い、最大文字数やアイコンのホワイトリスト検証はPhase 3で追加する。
 func (h *Handler) createSession(c *gin.Context) {
-	// リクエストボディを検証する。
 	var req createSessionReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON body"})
@@ -69,13 +74,12 @@ func (h *Handler) createSession(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "lat and lng are required and must be valid coordinates"})
 		return
 	}
+	if req.DisplayName == "" || req.AvatarIcon == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "displayName and avatarIcon are required"})
+		return
+	}
 
-	// hub 経由でセッションを作成（永続化＋メモリ登録）する。
-	rec, err := h.hub.Create(c.Request.Context(), session.LocationState{
-		Lat:       req.Lat,
-		Lng:       req.Lng,
-		UpdatedAt: time.Now().UTC(),
-	})
+	rec, host, err := h.hub.Create(c.Request.Context(), req.Lat, req.Lng, req.Address, req.DisplayName, req.AvatarIcon)
 	if err != nil {
 		h.log.Error("create session failed", "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create session"})
@@ -83,45 +87,105 @@ func (h *Handler) createSession(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, createSessionResp{
-		SessionID: rec.ID,
-		TokenA:    rec.TokenA,
-		ShareURL:  h.publicBaseURL + "/?s=" + rec.ID + "&t=" + rec.TokenB,
-		ExpiresAt: rec.ExpiresAt,
+		SessionID:     rec.ID,
+		TokenHost:     rec.TokenHost,
+		ParticipantID: host.ID,
+		ShareURL:      h.publicBaseURL + "/?s=" + rec.ID + "&t=" + rec.TokenGuest,
+		ExpiresAt:     rec.ExpiresAt,
 	})
 }
 
-// stateResp: GET /api/sessions/:id/state のレスポンス型。
+// participantResp: GET /api/sessions/:id/state のレスポンスに含める参加者の公開情報。
+type participantResp struct {
+	ID            string                 `json:"id"`
+	Role          session.Role           `json:"role"`
+	DisplayName   string                 `json:"displayName"`
+	AvatarIcon    string                 `json:"avatarIcon"`
+	TransportMode session.TransportMode  `json:"transportMode"`
+	Live          *session.LocationState `json:"live"`
+	ETASeconds    *int                   `json:"etaSeconds"`
+}
+
+// destinationResp: GET /api/sessions/:id/state のレスポンスに含める目的地情報。
+type destinationResp struct {
+	Lat       float64   `json:"lat"`
+	Lng       float64   `json:"lng"`
+	Address   string    `json:"address,omitempty"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// stateResp: GET /api/sessions/:id/state のレスポンス型（仕様書§5.5、参加登録済みの場合）。
 type stateResp struct {
-	Role      session.Role           `json:"role"`
-	ExpiresAt time.Time              `json:"expiresAt"`
-	Target    session.LocationState  `json:"target"`
-	LiveA     *session.LocationState `json:"liveA,omitempty"`
-	LiveB     *session.LocationState `json:"liveB,omitempty"`
+	Role          session.Role      `json:"role"`
+	ParticipantID string            `json:"participantId"`
+	Destination   destinationResp   `json:"destination"`
+	ExpiresAt     time.Time         `json:"expiresAt"`
+	Participants  []participantResp `json:"participants"`
+}
+
+// guestPreviewResp: GET /api/sessions/:id/state のレスポンス型（仕様書§5.5・§14.2）。
+// ゲストが participantId 未指定でアクセスした場合（初回参加前）に返す、
+// ゲスト用トップページ表示に必要な最小限のプレビュー。参加者登録は行わず、
+// 他参加者の表示名・位置情報など個人情報は一切含めない。
+type guestPreviewResp struct {
+	DestAddress      string    `json:"destAddress,omitempty"`
+	ParticipantCount int       `json:"participantCount"`
+	ExpiresAt        time.Time `json:"expiresAt"`
 }
 
 // getState は GET /api/sessions/:id/state を実装する。
-// ページ再読み込み時、WebSocket が再接続する前の状態同期に使われる（仕様書§7）。
+// ページ再読み込み時、WebSocket が再接続する前の状態同期や、
+// ゲスト用トップページのプレビュー表示に使われる（仕様書§5.5）。
 func (h *Handler) getState(c *gin.Context) {
 	id := c.Param("id")
 	token := c.Query("token")
+	participantID := c.Query("participantId")
 
-	rec, role, err := h.hub.GetState(c.Request.Context(), id, token)
+	rec, self, all, err := h.hub.GetState(c.Request.Context(), id, token, participantID)
 	if err != nil {
 		respondSessionErr(c, err)
 		return
 	}
 
+	if self == nil {
+		// role=guest かつ participantId 未指定: 初回ゲスト向けプレビュー(§5.5, §14.2)。
+		c.JSON(http.StatusOK, guestPreviewResp{
+			DestAddress:      rec.DestAddress,
+			ParticipantCount: len(all),
+			ExpiresAt:        rec.ExpiresAt,
+		})
+		return
+	}
+
+	participants := make([]participantResp, 0, len(all))
+	for _, p := range all {
+		participants = append(participants, participantResp{
+			ID:            p.ID,
+			Role:          p.Role,
+			DisplayName:   p.DisplayName,
+			AvatarIcon:    p.AvatarIcon,
+			TransportMode: p.TransportMode,
+			Live:          p.Live,
+			ETASeconds:    p.ETASeconds,
+		})
+	}
+
 	c.JSON(http.StatusOK, stateResp{
-		Role:      role,
-		ExpiresAt: rec.ExpiresAt,
-		Target:    rec.LocATarget,
-		LiveA:     rec.LocALive,
-		LiveB:     rec.LocBLive,
+		Role:          self.Role,
+		ParticipantID: self.ID,
+		Destination: destinationResp{
+			Lat:       rec.DestLat,
+			Lng:       rec.DestLng,
+			Address:   rec.DestAddress,
+			UpdatedAt: rec.DestUpdatedAt,
+		},
+		ExpiresAt:    rec.ExpiresAt,
+		Participants: participants,
 	})
 }
 
 // endSession は POST /api/sessions/:id/end を実装する。
-// どちらの参加者からでもセッションを即座に終了できる（仕様書§5.5）。
+// ホストのトークンのみ受理する（仕様書§5.6）。ゲストトークンでの呼び出しは403。
 func (h *Handler) endSession(c *gin.Context) {
 	id := c.Param("id")
 	token := c.Query("token")
@@ -135,11 +199,16 @@ func (h *Handler) endSession(c *gin.Context) {
 
 // respondSessionErr は session パッケージのエラーを適切な HTTP ステータスに変換する。
 func respondSessionErr(c *gin.Context, err error) {
-	if errors.Is(err, session.ErrNotFound) {
+	switch {
+	case errors.Is(err, session.ErrNotFound):
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found or expired"})
-		return
+	case errors.Is(err, session.ErrForbidden):
+		c.JSON(http.StatusForbidden, gin.H{"error": "not allowed for this role"})
+	case errors.Is(err, session.ErrParticipantLimit):
+		c.JSON(http.StatusForbidden, gin.H{"error": "session is full"})
+	default:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 	}
-	c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 }
 
 // validLatLng はゼロ値（項目省略時にデコードされる 0,0 で、このアプリでは

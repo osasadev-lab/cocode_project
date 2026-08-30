@@ -6,7 +6,6 @@ package db
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -16,17 +15,54 @@ import (
 	"github.com/osasadev-lab/cocode_project/server/internal/session"
 )
 
-// sessions テーブルの定義。存在しなければ Open() 時に自動で作成される。
+// sessions/participants テーブルの定義（仕様書§5.3）。存在しなければ Open() 時に
+// 自動で作成される。
+//
+// 注意(v1→v2移行、2026-08-30): v1のsessionsテーブル(token_a/token_b/loc_a_*/loc_b_*
+// カラム)とは非互換のスキーマである。CREATE TABLE IF NOT EXISTSは同名テーブルが
+// 既に存在する場合は何もしないため、v1スキーマのsessionsテーブルが残ったままだと
+// 起動はできてもこのパッケージのクエリは全て失敗する。v1→v2移行時は、
+// このコードをデプロイする前に一度だけ
+//
+//	drop table if exists sessions cascade;
+//
+// をローカルDB・本番Supabase双方に対して手動実行しておくこと。
+//
+// この DROP をここ（Open時に毎回実行されるスキーマ確認処理）に含めていない
+// のは意図的な設計判断: cocodeはCloud Runをmin-instances=0でデプロイしており
+// （デプロイ手順書参照）、アクセスが無い時間が続くとインスタンスが停止し、
+// 次のリクエストでコールドスタートしてOpen()が再実行される。もしDROP TABLEを
+// 自動マイグレーションに含めてしまうと、本番運用開始後はコールドスタートの
+// たびに稼働中の全セッションを含むテーブルが失われることになる。そのため、
+// 自動実行されるDDLはIF NOT EXISTSのみにとどめ、破壊的な移行は一度きりの
+// 手動操作として分離している。
 const schemaDDL = `
 create table if not exists sessions (
-  id           uuid primary key default gen_random_uuid(),
-  token_a      text not null unique,
-  token_b      text not null unique,
-  created_at   timestamptz not null default now(),
-  expires_at   timestamptz not null,
-  loc_a_target jsonb not null,
-  loc_a_live   jsonb,
-  loc_b_live   jsonb
+  id              uuid primary key default gen_random_uuid(),
+  token_host      text not null unique,
+  token_guest     text not null unique,
+  created_at      timestamptz not null default now(),
+  expires_at      timestamptz not null,
+  dest_lat        double precision not null,
+  dest_lng        double precision not null,
+  dest_address    text,
+  dest_updated_at timestamptz not null
+);
+
+create table if not exists participants (
+  id              uuid primary key default gen_random_uuid(),
+  session_id      uuid not null references sessions(id) on delete cascade,
+  role            text not null check (role in ('host', 'guest')),
+  display_name    text not null,
+  avatar_icon     text not null,
+  transport_mode  text not null default 'walk' check (transport_mode in ('walk', 'car', 'train')),
+  live_lat        double precision,
+  live_lng        double precision,
+  live_accuracy   double precision,
+  live_updated_at timestamptz,
+  eta_seconds     integer,
+  arrived_at      timestamptz,
+  joined_at       timestamptz not null default now()
 );
 `
 
@@ -36,7 +72,7 @@ type Postgres struct {
 }
 
 // Open は接続文字列（Supabase のコネクションプーリング用 URI など）を使って
-// Postgres へ接続し、sessions テーブルが存在することを保証する。
+// Postgres へ接続し、sessions/participants テーブルが存在することを保証する。
 func Open(ctx context.Context, connString string) (*Postgres, error) {
 	// 接続をオープン（実際の TCP 接続はまだ確立しない）。
 	sqlDB, err := sql.Open("pgx", connString)
@@ -61,104 +97,178 @@ func (p *Postgres) Close() error {
 	return p.db.Close()
 }
 
-// Insert は新しいセッション行を作成し、DB が採番した id や created_at を
-// 含む完全なレコードを返す。
-func (p *Postgres) Insert(ctx context.Context, tokenA, tokenB string, ttl time.Duration, target session.LocationState) (*session.Record, error) {
-	targetJSON, err := json.Marshal(target)
+// InsertWithHost はセッションとホスト参加者を1トランザクションで作成する。
+func (p *Postgres) InsertWithHost(ctx context.Context, tokenHost, tokenGuest string, ttl time.Duration, destLat, destLng float64, destAddress, hostDisplayName, hostAvatarIcon string) (*session.Record, *session.Participant, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("marshal target: %w", err)
+		return nil, nil, fmt.Errorf("begin tx: %w", err)
 	}
+	defer tx.Rollback() //nolint:errcheck // コミット成功後のRollbackはno-op
 
 	rec := &session.Record{
-		TokenA:     tokenA,
-		TokenB:     tokenB,
-		LocATarget: target,
+		TokenHost:   tokenHost,
+		TokenGuest:  tokenGuest,
+		DestLat:     destLat,
+		DestLng:     destLng,
+		DestAddress: destAddress,
 	}
 
 	// expires_at は DB 側で now() + TTL として計算させ、時刻のズレを防ぐ。
-	const q = `
-		insert into sessions (token_a, token_b, expires_at, loc_a_target)
-		values ($1, $2, now() + $3::interval, $4)
-		returning id, created_at, expires_at
+	const insertSession = `
+		insert into sessions (token_host, token_guest, expires_at, dest_lat, dest_lng, dest_address, dest_updated_at)
+		values ($1, $2, now() + $3::interval, $4, $5, nullif($6, ''), now())
+		returning id, created_at, expires_at, dest_updated_at
 	`
-	row := p.db.QueryRowContext(ctx, q, tokenA, tokenB, fmt.Sprintf("%d seconds", int(ttl.Seconds())), targetJSON)
-	if err := row.Scan(&rec.ID, &rec.CreatedAt, &rec.ExpiresAt); err != nil {
-		return nil, fmt.Errorf("insert session: %w", err)
+	row := tx.QueryRowContext(ctx, insertSession, tokenHost, tokenGuest, fmt.Sprintf("%d seconds", int(ttl.Seconds())), destLat, destLng, destAddress)
+	if err := row.Scan(&rec.ID, &rec.CreatedAt, &rec.ExpiresAt, &rec.DestUpdatedAt); err != nil {
+		return nil, nil, fmt.Errorf("insert session: %w", err)
 	}
-	return rec, nil
+
+	host := &session.Participant{
+		SessionID:   rec.ID,
+		Role:        session.RoleHost,
+		DisplayName: hostDisplayName,
+		AvatarIcon:  hostAvatarIcon,
+	}
+	const insertHost = `
+		insert into participants (session_id, role, display_name, avatar_icon)
+		values ($1, 'host', $2, $3)
+		returning id, transport_mode, joined_at
+	`
+	row = tx.QueryRowContext(ctx, insertHost, rec.ID, hostDisplayName, hostAvatarIcon)
+	if err := row.Scan(&host.ID, &host.TransportMode, &host.JoinedAt); err != nil {
+		return nil, nil, fmt.Errorf("insert host participant: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, nil, fmt.Errorf("commit tx: %w", err)
+	}
+	return rec, host, nil
 }
 
-// Get は id からセッションを取得する。存在しなければ session.ErrNotFound を返す。
+// Get は id からセッション本体を取得する。存在しなければ session.ErrNotFound を返す。
 func (p *Postgres) Get(ctx context.Context, id string) (*session.Record, error) {
 	const q = `
-		select id, token_a, token_b, created_at, expires_at, loc_a_target, loc_a_live, loc_b_live
+		select id, token_host, token_guest, created_at, expires_at, dest_lat, dest_lng, coalesce(dest_address, ''), dest_updated_at
 		from sessions where id = $1
 	`
 	row := p.db.QueryRowContext(ctx, q, id)
 
 	var rec session.Record
-	var targetJSON []byte
-	var liveAJSON, liveBJSON sql.NullString
-
-	// 行を読み取る。行が無ければ ErrNoRows を session.ErrNotFound に変換する。
-	if err := row.Scan(&rec.ID, &rec.TokenA, &rec.TokenB, &rec.CreatedAt, &rec.ExpiresAt, &targetJSON, &liveAJSON, &liveBJSON); err != nil {
+	if err := row.Scan(&rec.ID, &rec.TokenHost, &rec.TokenGuest, &rec.CreatedAt, &rec.ExpiresAt, &rec.DestLat, &rec.DestLng, &rec.DestAddress, &rec.DestUpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, session.ErrNotFound
 		}
 		return nil, fmt.Errorf("get session: %w", err)
 	}
-
-	// jsonb 列（目的地・A/Bのライブ位置）をそれぞれ Go の構造体へ変換する。
-	if err := json.Unmarshal(targetJSON, &rec.LocATarget); err != nil {
-		return nil, fmt.Errorf("unmarshal loc_a_target: %w", err)
-	}
-	loc, err := unmarshalNullableLocation(liveAJSON, "loc_a_live")
-	if err != nil {
-		return nil, err
-	}
-	rec.LocALive = loc
-
-	loc, err = unmarshalNullableLocation(liveBJSON, "loc_b_live")
-	if err != nil {
-		return nil, err
-	}
-	rec.LocBLive = loc
-
 	return &rec, nil
 }
 
-// unmarshalNullableLocation は NULL 許容の jsonb 位置情報カラムをデコードする。
-// カラムが NULL の場合は nil を返す。Get 内の loc_a_live / loc_b_live で共用する。
-func unmarshalNullableLocation(col sql.NullString, fieldName string) (*session.LocationState, error) {
-	if !col.Valid {
-		return nil, nil
+// ListParticipants はセッションに紐づく全参加者を参加順(joined_at)で取得する。
+func (p *Postgres) ListParticipants(ctx context.Context, sessionID string) ([]*session.Participant, error) {
+	const q = `
+		select id, session_id, role, display_name, avatar_icon, transport_mode,
+		       live_lat, live_lng, live_accuracy, live_updated_at, eta_seconds, arrived_at, joined_at
+		from participants where session_id = $1 order by joined_at
+	`
+	rows, err := p.db.QueryContext(ctx, q, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("list participants: %w", err)
 	}
-	var loc session.LocationState
-	if err := json.Unmarshal([]byte(col.String), &loc); err != nil {
-		return nil, fmt.Errorf("unmarshal %s: %w", fieldName, err)
+	defer rows.Close()
+
+	var out []*session.Participant
+	for rows.Next() {
+		part, err := scanParticipant(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, part)
 	}
-	return &loc, nil
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list participants: %w", err)
+	}
+	return out, nil
 }
 
-// UpdateLocation は role/kind に対応する位置情報カラムを上書きする。
-func (p *Postgres) UpdateLocation(ctx context.Context, id string, role session.Role, kind session.Kind, loc session.LocationState) error {
-	column, err := columnFor(role, kind)
+// InsertParticipant は新規ゲスト参加者を作成する。
+// 上限（session.MaxParticipants）到達時は session.ErrParticipantLimit を返し、INSERTは行わない。
+func (p *Postgres) InsertParticipant(ctx context.Context, sessionID, displayName, avatarIcon string) (*session.Participant, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("begin tx: %w", err)
 	}
-	locJSON, err := json.Marshal(loc)
-	if err != nil {
-		return fmt.Errorf("marshal location: %w", err)
+	defer tx.Rollback() //nolint:errcheck // コミット成功後のRollbackはno-op
+
+	var count int
+	if err := tx.QueryRowContext(ctx, `select count(*) from participants where session_id = $1`, sessionID).Scan(&count); err != nil {
+		return nil, fmt.Errorf("count participants: %w", err)
+	}
+	if count >= session.MaxParticipants {
+		return nil, session.ErrParticipantLimit
 	}
 
-	q := fmt.Sprintf(`update sessions set %s = $1 where id = $2`, column)
-	if _, err := p.db.ExecContext(ctx, q, locJSON, id); err != nil {
-		return fmt.Errorf("update %s: %w", column, err)
+	part := &session.Participant{
+		SessionID:   sessionID,
+		Role:        session.RoleGuest,
+		DisplayName: displayName,
+		AvatarIcon:  avatarIcon,
+	}
+	const q = `
+		insert into participants (session_id, role, display_name, avatar_icon)
+		values ($1, 'guest', $2, $3)
+		returning id, transport_mode, joined_at
+	`
+	row := tx.QueryRowContext(ctx, q, sessionID, displayName, avatarIcon)
+	if err := row.Scan(&part.ID, &part.TransportMode, &part.JoinedAt); err != nil {
+		return nil, fmt.Errorf("insert guest participant: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit tx: %w", err)
+	}
+	return part, nil
+}
+
+// GetParticipant は participantId から参加者を取得する（再接続時の検証用）。
+// 存在しなければ session.ErrNotFound を返す。
+func (p *Postgres) GetParticipant(ctx context.Context, sessionID, participantID string) (*session.Participant, error) {
+	const q = `
+		select id, session_id, role, display_name, avatar_icon, transport_mode,
+		       live_lat, live_lng, live_accuracy, live_updated_at, eta_seconds, arrived_at, joined_at
+		from participants where session_id = $1 and id = $2
+	`
+	row := p.db.QueryRowContext(ctx, q, sessionID, participantID)
+	part, err := scanParticipant(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, session.ErrNotFound
+		}
+		return nil, err
+	}
+	return part, nil
+}
+
+// UpdateTarget はセッションの目的地を更新する。
+func (p *Postgres) UpdateTarget(ctx context.Context, sessionID string, lat, lng float64, address string, updatedAt time.Time) error {
+	const q = `update sessions set dest_lat = $1, dest_lng = $2, dest_address = nullif($3, ''), dest_updated_at = $4 where id = $5`
+	if _, err := p.db.ExecContext(ctx, q, lat, lng, address, updatedAt, sessionID); err != nil {
+		return fmt.Errorf("update target: %w", err)
 	}
 	return nil
 }
 
-// Delete はセッション行を削除する。既に削除済みでもエラーにはならない（冪等）。
+// UpdateParticipantLive は参加者のライブ位置を更新する。
+func (p *Postgres) UpdateParticipantLive(ctx context.Context, participantID string, loc session.LocationState) error {
+	const q = `update participants set live_lat = $1, live_lng = $2, live_accuracy = $3, live_updated_at = $4 where id = $5`
+	if _, err := p.db.ExecContext(ctx, q, loc.Lat, loc.Lng, loc.Accuracy, loc.UpdatedAt, participantID); err != nil {
+		return fmt.Errorf("update participant live: %w", err)
+	}
+	return nil
+}
+
+// Delete はセッションを削除する（既に削除済みでもエラーにはならない。冪等）。
+// participants は ON DELETE CASCADE で連動削除される。
 func (p *Postgres) Delete(ctx context.Context, id string) error {
 	if _, err := p.db.ExecContext(ctx, `delete from sessions where id = $1`, id); err != nil {
 		return fmt.Errorf("delete session: %w", err)
@@ -166,19 +276,44 @@ func (p *Postgres) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// columnFor は role と kind の組み合わせから対応するカラム名を決定する。
-// 不正な組み合わせ（例: B の target）の場合はエラーを返す。
-func columnFor(role session.Role, kind session.Kind) (string, error) {
-	switch {
-	case role == session.RoleA && kind == session.KindTarget:
-		return "loc_a_target", nil
-	case role == session.RoleA && kind == session.KindLive:
-		return "loc_a_live", nil
-	case role == session.RoleB && kind == session.KindLive:
-		return "loc_b_live", nil
-	default:
-		return "", fmt.Errorf("invalid role/kind combination: role=%s kind=%s", role, kind)
+// rowScanner は *sql.Row と *sql.Rows のどちらからも participants の1行を
+// 読み取れるようにするための共通インターフェース。
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanParticipant は participants テーブルの1行を session.Participant にデコードする。
+// ライブ位置・ETA・到着時刻はいずれも NULL 許容カラムのため、一度 sql.Null* で
+// 受けてから session.Participant のポインタ型フィールドへ変換する。
+func scanParticipant(row rowScanner) (*session.Participant, error) {
+	var part session.Participant
+	var liveLat, liveLng, liveAccuracy sql.NullFloat64
+	var liveUpdatedAt sql.NullTime
+	var etaSeconds sql.NullInt64
+	var arrivedAt sql.NullTime
+
+	if err := row.Scan(
+		&part.ID, &part.SessionID, &part.Role, &part.DisplayName, &part.AvatarIcon, &part.TransportMode,
+		&liveLat, &liveLng, &liveAccuracy, &liveUpdatedAt, &etaSeconds, &arrivedAt, &part.JoinedAt,
+	); err != nil {
+		return nil, fmt.Errorf("scan participant: %w", err)
 	}
+
+	if liveLat.Valid && liveLng.Valid {
+		part.Live = &session.LocationState{Lat: liveLat.Float64, Lng: liveLng.Float64, Accuracy: liveAccuracy.Float64}
+		if liveUpdatedAt.Valid {
+			part.Live.UpdatedAt = liveUpdatedAt.Time
+		}
+	}
+	if etaSeconds.Valid {
+		v := int(etaSeconds.Int64)
+		part.ETASeconds = &v
+	}
+	if arrivedAt.Valid {
+		t := arrivedAt.Time
+		part.ArrivedAt = &t
+	}
+	return &part, nil
 }
 
 // コンパイル時に Postgres が session.Store を満たしていることを保証する。
