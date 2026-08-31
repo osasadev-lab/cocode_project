@@ -364,6 +364,14 @@ func (p *Postgres) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+// DeleteParticipant は個別のゲスト参加者を削除する（既に削除済みでもエラーにはならない。冪等）。
+func (p *Postgres) DeleteParticipant(ctx context.Context, participantID string) error {
+	if _, err := p.db.ExecContext(ctx, `delete from participants where id = $1`, participantID); err != nil {
+		return fmt.Errorf("delete participant: %w", err)
+	}
+	return nil
+}
+
 // rowScanner は *sql.Row と *sql.Rows のどちらからも participants の1行を
 // 読み取れるようにするための共通インターフェース。
 type rowScanner interface {

@@ -78,6 +78,10 @@ type authFrame struct {
 	ParticipantID string `json:"participantId"`
 	DisplayName   string `json:"displayName"`
 	AvatarIcon    string `json:"avatarIcon"`
+	// AnnounceRejoin: 明示的に退出した後、招待リンクから再入室したゲストの
+	// 再接続であることをクライアントが伝えるフラグ（2026-09-01新設、
+	// web/lib/useCocodeSocket.ts参照）。参加者IDが未指定（新規参加）の場合は無視される。
+	AnnounceRejoin bool `json:"announceRejoin"`
 }
 
 // destinationPayload は sync フレームに含める目的地情報。
@@ -99,6 +103,7 @@ type participantPublic struct {
 	TransportMode session.TransportMode  `json:"transportMode"`
 	Live          *session.LocationState `json:"live"`
 	ETASeconds    *int                   `json:"etaSeconds"`
+	Arrived       bool                   `json:"arrived"`
 }
 
 // syncPayload は Join 成功直後に送られる初回の "sync" フレームで、
@@ -159,7 +164,7 @@ func (h *Handler) serve(c *gin.Context) {
 	_ = wsConn.SetReadDeadline(time.Time{})
 
 	ctx := context.Background()
-	rec, self, all, err := h.hub.Join(ctx, auth.SessionID, auth.Token, auth.ParticipantID, auth.DisplayName, auth.AvatarIcon, conn)
+	rec, self, all, err := h.hub.Join(ctx, auth.SessionID, auth.Token, auth.ParticipantID, auth.DisplayName, auth.AvatarIcon, auth.AnnounceRejoin, conn)
 	if err != nil {
 		_ = conn.Send(map[string]string{"type": "error", "message": joinErrorMessage(err)})
 		return
@@ -191,6 +196,18 @@ func (h *Handler) serve(c *gin.Context) {
 	for {
 		var msg inboundMsg
 		if err := wsConn.ReadJSON(&msg); err != nil {
+			// JSONの型不一致・構文エラーはメッセージの内容だけが不正で、
+			// 接続自体は生きている（2026-08-31発見: フロントエンドが
+			// etaSecondsに小数を送ってしまうバグで、ETASeconds *int への
+			// アンマーシャル失敗がそのままセッション全体の強制切断に繋がって
+			// いた）。1件の不正なメッセージでセッションを丸ごと落とさない
+			// よう、このメッセージだけ無視して受信を継続する。
+			var typeErr *json.UnmarshalTypeError
+			var syntaxErr *json.SyntaxError
+			if errors.As(err, &typeErr) || errors.As(err, &syntaxErr) {
+				h.log.Warn("ignoring malformed ws message", "session", auth.SessionID, "participant", self.ID, "err", err)
+				continue
+			}
 			break
 		}
 		switch msg.Type {
@@ -279,5 +296,6 @@ func toParticipantPublic(p *session.Participant) participantPublic {
 		TransportMode: p.TransportMode,
 		Live:          p.Live,
 		ETASeconds:    p.ETASeconds,
+		Arrived:       p.ArrivedAt != nil,
 	}
 }

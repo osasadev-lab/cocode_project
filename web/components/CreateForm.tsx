@@ -2,139 +2,151 @@
 
 import { useState } from "react";
 import { MapView } from "./MapView";
+import { AvatarPicker } from "./AvatarPicker";
+import { TransportPicker } from "./TransportPicker";
+import { DestinationPickerPanel } from "./DestinationPickerPanel";
+import { DEFAULT_AVATAR_ICON } from "@/lib/avatars";
 import { createSession } from "@/lib/api";
-import { getCurrentPosition } from "@/lib/geolocation";
-import { saveSession } from "@/lib/storage";
-import type { LocationState } from "@/lib/types";
+import { useDestinationPicker } from "@/lib/useDestinationPicker";
+import { useLiveLocation } from "@/lib/geolocation";
+import { useTransportEtaOptions } from "@/lib/useTransportEtaOptions";
+import type { LocationState, TransportMode } from "@/lib/types";
 
 interface CreateFormProps {
-  onCreated: (sessionId: string, token: string, shareUrl: string) => void;
+  onCreated: (
+    sessionId: string,
+    token: string,
+    participantId: string,
+    shareUrl: string,
+    transportMode: TransportMode,
+    expiresAt: string
+  ) => void;
+  /** 「トップ画面に戻る」押下時に呼ばれる(2026-08-31新設)。 */
+  onCancel: () => void;
 }
 
-type Step = "choose" | "picking";
-
 /**
- * ユーザーA の入口画面。セッション（＝共有リンク）が存在する前に、
+ * ホストの入口画面。セッション（＝共有リンク）が存在する前に、
  * ここで待ち合わせ地点を選んでおく必要がある — 仕様書§5.1/§5.2/§10-4により、
  * 待ち合わせ地点が未設定のままリンクを発行することは意図的に禁止されている。
  *
- * 画面遷移: まずブロッキングモーダルの「choose」で方法（現在地 or 地図タップ）を選び、
- * 次に非ブロッキングの小さなカードに切り替わることで地図は常にタップ可能なままになる。
- * これにより、繰り返しタップしてもモーダルが毎回出ずにピンの位置だけが動く。
+ * 入力順(2026-08-31再改訂): 最初のステップは**表示名・アイコンのみ**。移動手段は
+ * 地図を見ながら選べるよう、目的地確定パネル(「この地点で共有リンクを作成」)の
+ * 直前に移した — 目的地が決まる前に移動手段だけ先に選ばせても、ホストは地図を
+ * 見ていないため判断材料が無いため。
+ *
+ * 目的地の指定方法は`useDestinationPicker`(2026-08-31新設)に集約し、
+ * 目的地変更(LiveSession)と全く同じ流れを共有する — いずれの方式で選んでも、
+ * 最終的に地図タップで微調整・確定できるpicking画面へ合流する。
  */
-export function CreateForm({ onCreated }: CreateFormProps) {
-  const [step, setStep] = useState<Step>("choose");
-  const [point, setPoint] = useState<{ lat: number; lng: number } | null>(null);
-  const [locating, setLocating] = useState(false);
+export function CreateForm({ onCreated, onCancel }: CreateFormProps) {
+  const picker = useDestinationPicker();
+  const [profileConfirmed, setProfileConfirmed] = useState(false);
+  const [displayName, setDisplayName] = useState("");
+  const [avatarIcon, setAvatarIcon] = useState(DEFAULT_AVATAR_ICON);
+  const [transportMode, setTransportMode] = useState<TransportMode>("walk");
+  const [profileError, setProfileError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 移動手段選択時に目安所要時間も表示するため(2026-08-31新設、ゲスト参加時・
+  // フッターの変更と共通のUI)、目的地確定パネルに到達してからホストの現在地を
+  // 取得する(それより前に位置情報の許可を求めないようenabledで制御)。
+  const { point: myPoint } = useLiveLocation(profileConfirmed);
+  const myLive: LocationState | null = myPoint
+    ? { lat: myPoint.lat, lng: myPoint.lng, accuracy: myPoint.accuracy, updatedAt: new Date().toISOString() }
+    : null;
+  const previewTarget: LocationState | null = picker.point
+    ? { lat: picker.point.lat, lng: picker.point.lng, updatedAt: new Date().toISOString() }
+    : null;
+  // Reactのフックのルール上、条件分岐(下記の!profileConfirmed時の早期return)より
+  // 前で呼び出す必要がある。
+  const { etaByMode } = useTransportEtaOptions(myLive, previewTarget);
 
-  // useCurrentLocation: 現在地を取得し、待ち合わせ地点の候補として採用する。
-  async function useCurrentLocation() {
-    setError(null);
-    setLocating(true);
-    try {
-      const p = await getCurrentPosition();
-      setPoint({ lat: p.lat, lng: p.lng });
-      setStep("picking");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "現在地を取得できませんでした");
-    } finally {
-      setLocating(false);
+  // submitProfile: 表示名・アイコン・移動手段を確定し、目的地設定ステップへ進む。
+  function submitProfile() {
+    if (displayName.trim() === "") {
+      setProfileError("表示名を入力してください");
+      return;
     }
-  }
-
-  // chooseFromMap: 「地図から選択する」を選んだ場合、地図タップ待ちの状態にする。
-  function chooseFromMap() {
-    setError(null);
-    setStep("picking");
-  }
-
-  // reselect: 選択をやり直し、最初の方法選択画面に戻す。
-  function reselect() {
-    setPoint(null);
-    setError(null);
-    setStep("choose");
+    setProfileError(null);
+    setProfileConfirmed(true);
   }
 
   // confirm: 選択した地点でセッションを作成し、ローカル保存の上、親へ通知する。
   async function confirm() {
-    if (!point) return;
+    if (!picker.point) return;
     setCreating(true);
     setError(null);
     try {
-      const res = await createSession(point.lat, point.lng);
-      saveSession({
-        sessionId: res.sessionId,
-        token: res.tokenA,
-        expiresAt: res.expiresAt,
-        shareUrl: res.shareUrl,
-      });
-      onCreated(res.sessionId, res.tokenA, res.shareUrl);
+      const res = await createSession(
+        picker.point.lat,
+        picker.point.lng,
+        picker.point.address ?? "",
+        displayName.trim(),
+        avatarIcon
+      );
+      onCreated(res.sessionId, res.tokenHost, res.participantId, res.shareUrl, transportMode, res.expiresAt);
     } catch (e) {
       setError(e instanceof Error ? e.message : "セッションの作成に失敗しました。時間をおいて再度お試しください。");
       setCreating(false);
     }
   }
 
-  const previewTarget: LocationState | null = point
-    ? { lat: point.lat, lng: point.lng, updatedAt: new Date().toISOString() }
-    : null;
+  if (!profileConfirmed) {
+    return (
+      <div className="cocode-screen">
+        <div className="cocode-modal-backdrop">
+          <div className="cocode-glass cocode-form-card">
+            <p className="cocode-subtitle">まずはあなたのプロフィールを入力してください。</p>
+
+            <label className="cocode-hint" htmlFor="cocode-display-name">
+              表示名(20文字以内)
+            </label>
+            <input
+              id="cocode-display-name"
+              type="text"
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value.slice(0, 20))}
+              placeholder="例: たろう"
+              className="cocode-text-input"
+            />
+            <label className="cocode-hint">アイコン</label>
+            <AvatarPicker value={avatarIcon} onChange={setAvatarIcon} />
+            {profileError && <p className="cocode-error">{profileError}</p>}
+
+            <button className="cocode-btn cocode-btn-primary" onClick={submitProfile}>
+              次へ(待ち合わせ場所を決める)
+            </button>
+            <button className="cocode-btn cocode-btn-secondary" onClick={onCancel}>
+              トップ画面に戻る
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="cocode-screen">
       <MapView
         target={previewTarget}
-        liveA={null}
-        liveB={null}
-        pickingTarget={step === "picking"}
-        onPickTarget={(lat, lng) => setPoint({ lat, lng })}
+        participants={[]}
+        pickingTarget={picker.step === "picking"}
+        onPickTarget={picker.handleMapPick}
+        flyToTargetSignal={picker.flyToSignal}
       />
 
-      {step === "choose" ? (
-        <div className="cocode-modal-backdrop">
-          <div className="cocode-glass cocode-form-card">
-            <div className="cocode-brand">
-              <span className="cocode-brand-dot" />
-              cocode
-            </div>
-            <p className="cocode-subtitle">待ち合わせ場所を決めましょう。方法を選んでください。</p>
-
-            <button className="cocode-btn cocode-btn-secondary" onClick={useCurrentLocation} disabled={locating}>
-              {locating ? "取得中…" : "📍 現在地を使う"}
-            </button>
-            <button className="cocode-btn cocode-btn-secondary" onClick={chooseFromMap} disabled={locating}>
-              🗺️ 地図から選択する
-            </button>
-
-            {error && <p className="cocode-error">{error}</p>}
-          </div>
-        </div>
-      ) : (
-        <div className="cocode-topbar">
-          <div className="cocode-glass cocode-form-card cocode-picking-card">
-            {point ? (
-              <p className="cocode-hint">
-                地点を選択しました({point.lat.toFixed(5)}, {point.lng.toFixed(5)})。この場所を待ち合わせ地点として共有を開始します。
-              </p>
-            ) : (
-              <p className="cocode-hint">地図をタップして待ち合わせ地点を指定してください。</p>
-            )}
-
-            {point && (
-              <button className="cocode-btn cocode-btn-primary" onClick={confirm} disabled={creating}>
-                {creating ? "作成中…" : "この地点で共有リンクを作成"}
-              </button>
-            )}
-
-            <button className="cocode-btn cocode-btn-secondary" onClick={reselect} disabled={creating}>
-              選びなおす
-            </button>
-
-            {error && <p className="cocode-error">{error}</p>}
-          </div>
-        </div>
-      )}
+      <DestinationPickerPanel
+        picker={picker}
+        title="待ち合わせ場所を決めましょう。方法を選んでください。"
+        confirmLabel={creating ? "作成中…" : "この地点で共有リンクを作成"}
+        confirming={creating}
+        onConfirm={confirm}
+      >
+        <label className="cocode-hint">移動手段</label>
+        <TransportPicker value={transportMode} onChange={setTransportMode} etaByMode={etaByMode} />
+        {error && <p className="cocode-error">{error}</p>}
+      </DestinationPickerPanel>
     </div>
   );
 }

@@ -138,7 +138,15 @@ type stateResp struct {
 // ゲスト用トップページ表示に必要な最小限のプレビュー。参加者登録は行わず、
 // 他参加者の表示名・位置情報など個人情報は一切含めない。
 type guestPreviewResp struct {
-	DestAddress      string    `json:"destAddress,omitempty"`
+	DestAddress string `json:"destAddress,omitempty"`
+	// 目的地の座標(2026-08-31追加)。ゲストが参加確定(WS接続)する前の時点で、
+	// 現在地→目的地の全体経路を見ながら移動手段を選べるようにするため
+	// (仕様書§14.2改訂)。他参加者の個人情報(表示名・位置情報等)とは異なり、
+	// 目的地自体は招待の主目的であり、destAddress(住所文字列)は元々この
+	// プレビューで開示していたため、座標の追加開示は既存の情報公開範囲を
+	// 実質的に広げるものではない。
+	DestLat          float64   `json:"destLat"`
+	DestLng          float64   `json:"destLng"`
 	ParticipantCount int       `json:"participantCount"`
 	ExpiresAt        time.Time `json:"expiresAt"`
 }
@@ -161,6 +169,8 @@ func (h *Handler) getState(c *gin.Context) {
 		// role=guest かつ participantId 未指定: 初回ゲスト向けプレビュー(§5.5, §14.2)。
 		c.JSON(http.StatusOK, guestPreviewResp{
 			DestAddress:      rec.DestAddress,
+			DestLat:          rec.DestLat,
+			DestLng:          rec.DestLng,
 			ParticipantCount: len(all),
 			ExpiresAt:        rec.ExpiresAt,
 		})

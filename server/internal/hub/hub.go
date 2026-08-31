@@ -57,6 +57,12 @@ const MaxExpressionTextLength = 50
 // arrivalRadiusMeters は到着とみなす目的地からの半径（仕様書§12.1-①、既定50m）。
 const arrivalRadiusMeters = 50.0
 
+// ReturnGracePeriod は接続が切れてから「画面に復帰しなかった」とみなすまでの
+// 猶予時間（新設）。この時間内にJoin（再接続）すればタイマーはキャンセルされる。
+// 復帰しなかった場合、ホストはセッション全体を終了し、ゲストはそのゲストのみを
+// 個別退出させる。
+const ReturnGracePeriod = 10 * time.Minute
+
 // participantSummary は participant_joined ブロードキャストに乗せる、
 // 新規参加者の公開情報（仕様書§5.4）。sync フレーム用のより詳細な表現
 // （ライブ位置・ETA込み）は ws パッケージ側の participantPublic が別途持つ。
@@ -148,6 +154,7 @@ type room struct {
 	conns              map[string]Conn                 // participantId -> 接続中のコネクション（未接続なら不在）
 	profileCooldown    map[string]time.Time            // participantId -> 直近の profile_update 時刻（仕様書§14.5）
 	expressionCooldown map[string]time.Time            // participantId -> 直近の expression 時刻（仕様書§12.1）
+	returnTimers       map[string]*time.Timer          // participantId -> 復帰猶予タイマー（ReturnGracePeriod、新設）
 	timer              *time.Timer
 }
 
@@ -181,6 +188,7 @@ func (m *Manager) newRoom(rec *session.Record, participants []*session.Participa
 		conns:              make(map[string]Conn),
 		profileCooldown:    make(map[string]time.Time),
 		expressionCooldown: make(map[string]time.Time),
+		returnTimers:       make(map[string]*time.Timer),
 		timer:              time.AfterFunc(time.Until(rec.ExpiresAt), func() { m.expire(id) }),
 	}
 }
@@ -291,7 +299,14 @@ func (m *Manager) GetState(ctx context.Context, sessionID, token, participantID 
 // 新規参加者を作成する（displayName/avatarIcon必須、上限到達時は
 // session.ErrParticipantLimit）。戻り値の all には self を含む、その時点の
 // 全参加者のスナップショットを返す（sync ペイロード用）。
-func (m *Manager) Join(ctx context.Context, sessionID, token, participantID, displayName, avatarIcon string, conn Conn) (rec *session.Record, self *session.Participant, all []*session.Participant, err error) {
+//
+// announceRejoin は、明示的に「退出する」した後、招待リンクから再び参加した
+// ゲストの再接続かどうかをクライアント側の判断で伝えるフラグ（2026-09-01
+// 新設）。通常の（ネットワーク瞬断からの）自動再接続では他参加者への通知を
+// 一切行わない現行の設計は維持しつつ、ユーザーが明示的に再入室した場合だけ
+// participant_joined を再送し、チャットのアクティビティログに「参加しました」
+// を残せるようにする。
+func (m *Manager) Join(ctx context.Context, sessionID, token, participantID, displayName, avatarIcon string, announceRejoin bool, conn Conn) (rec *session.Record, self *session.Participant, all []*session.Participant, err error) {
 	r, err := m.getOrLoad(ctx, sessionID)
 	if err != nil {
 		return nil, nil, nil, err
@@ -349,13 +364,24 @@ func (m *Manager) Join(ctx context.Context, sessionID, token, participantID, dis
 		_ = prev.Close()
 	}
 	r.conns[self.ID] = conn
+	// 画面に復帰した（再接続した）ので、保留中の復帰猶予タイマーがあれば止める
+	// （ReturnGracePeriod、新設）。
+	if t, ok := r.returnTimers[self.ID]; ok {
+		t.Stop()
+		delete(r.returnTimers, self.ID)
+	}
 	recCopy := *r.rec
 	allSnapshot := snapshotParticipants(r)
 	peers := otherConns(r, self.ID)
 	r.mu.Unlock()
 
-	// 新規ゲストの参加のみ他参加者へ通知する（再接続時は通知しない）。
-	if isNewGuest {
+	// 新規ゲストの参加、または明示的な再入室(announceRejoin)の場合のみ
+	// 他参加者へparticipant_joinedを通知する（通常の自動再接続では通知しない、
+	// 2026-09-01改訂）。再入室の場合、既にDisconnect時点でparticipant_leftが
+	// 配信されて相手側の参加者一覧から取り除かれているため、再接続時も
+	// 同じイベント（＝再度リストへ追加させる形）を使うのが自然。
+	announceJoin := isNewGuest || (role == session.RoleGuest && announceRejoin)
+	if announceJoin {
 		msg := participantJoinedMsg{
 			Type: EventParticipantJoined,
 			Participant: participantSummary{
@@ -375,9 +401,19 @@ func (m *Manager) Join(ctx context.Context, sessionID, token, participantID, dis
 }
 
 // Disconnect はソケットが閉じた際にコネクションをセッションから切り離す。
-// 参加者情報（displayName等）自体は削除しない — 再接続に備えるため。
-// 他の接続中参加者全員へ participant_left をブロードキャストする
-// （不具合修正§0: v1では固定の1名にしか送っていなかった）。
+//
+// ホストの切断は復帰猶予を設けず即座にセッション全体を終了する（2026-09-02
+// 改訂、ユーザー指示）。ホスト不在のまま位置共有を続ける意味は無いため。
+// タブを閉じた場合に限らず、ネットワーク瞬断などあらゆる切断が対象になる
+// （ホスト側だけ再接続で復帰させたい場合は、この早期終了より前に専用の
+// 「猶予あり切断」経路を別途設ける必要がある — 現状はユーザー指示通り
+// 即終了で統一している）。
+//
+// ゲストの切断は従来通り、参加者情報を残したまま復帰猶予タイマー
+// （ReturnGracePeriod）を起動する。他の接続中参加者全員へ participant_left
+// をブロードキャストし（不具合修正§0: v1では固定の1名にしか送っていなかった）、
+// 猶予時間内に再接続（Join）すればタイマーはキャンセルされ、しなければ
+// そのゲストのみ個別退出扱いとする（handleReturnTimeout）。
 func (m *Manager) Disconnect(sessionID, participantID string, conn Conn) {
 	m.mu.Lock()
 	r, ok := m.rooms[sessionID]
@@ -393,15 +429,77 @@ func (m *Manager) Disconnect(sessionID, participantID string, conn Conn) {
 	}
 	delete(r.conns, participantID)
 	displayName := ""
+	var role session.Role
 	if p, ok := r.participants[participantID]; ok {
 		displayName = p.DisplayName
+		role = p.Role
 	}
+
+	if role == session.RoleHost {
+		r.mu.Unlock()
+		m.teardown(context.Background(), sessionID, EventSessionEnded, "host_disconnected")
+		return
+	}
+
 	peers := otherConns(r, participantID)
+
+	if t, ok := r.returnTimers[participantID]; ok {
+		t.Stop()
+	}
+	r.returnTimers[participantID] = time.AfterFunc(ReturnGracePeriod, func() {
+		m.handleReturnTimeout(sessionID, participantID)
+	})
 	r.mu.Unlock()
 
 	msg := participantLeftMsg{Type: EventParticipantLeft, ParticipantID: participantID, DisplayName: displayName}
 	for _, c := range peers {
 		_ = c.Send(msg)
+	}
+}
+
+// handleReturnTimeout は復帰猶予タイマー（ReturnGracePeriod）が発火した際に呼ばれる。
+// タイマー起動後に再接続済み、またはセッションが別経路（手動終了・TTL失効）で
+// 既に片付いている場合は何もしない。ホストの切断はDisconnectで即座に処理
+// されるため（2026-09-02改訂）、このタイマーはゲストの切断からしか発生しない。
+func (m *Manager) handleReturnTimeout(sessionID, participantID string) {
+	m.mu.Lock()
+	r, ok := m.rooms[sessionID]
+	m.mu.Unlock()
+	if !ok {
+		return
+	}
+
+	r.mu.Lock()
+	_, reconnected := r.conns[participantID]
+	_, stillPending := r.returnTimers[participantID]
+	r.mu.Unlock()
+	if reconnected || !stillPending {
+		return
+	}
+
+	// ゲストが10分間画面に復帰しなかった場合、そのゲストのみ個別退出させる（新設）。
+	// participant_leftは既にDisconnect時点で配信済みのため、ここでは再送しない。
+	m.removeParticipant(context.Background(), sessionID, participantID)
+}
+
+// removeParticipant はゲスト参加者1人を、復帰猶予切れにより恒久的に退出させる。
+// メモリ・DBの両方から取り除き、以後は同じparticipantIdでJoin（再接続）しても
+// 復帰できないようにする。
+func (m *Manager) removeParticipant(ctx context.Context, sessionID, participantID string) {
+	m.mu.Lock()
+	r, ok := m.rooms[sessionID]
+	m.mu.Unlock()
+	if !ok {
+		return
+	}
+
+	r.mu.Lock()
+	delete(r.participants, participantID)
+	delete(r.returnTimers, participantID)
+	r.mu.Unlock()
+
+	if err := m.store.DeleteParticipant(ctx, participantID); err != nil && m.log != nil {
+		m.log.Error("delete inactive participant failed", "session", sessionID, "participant", participantID, "err", err)
 	}
 }
 
@@ -732,6 +830,9 @@ func (m *Manager) teardown(ctx context.Context, sessionID, eventType, reason str
 		r.mu.Lock()
 		if r.timer != nil {
 			r.timer.Stop()
+		}
+		for _, t := range r.returnTimers {
+			t.Stop()
 		}
 		for _, c := range r.conns {
 			conns = append(conns, c)

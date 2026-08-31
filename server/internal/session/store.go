@@ -62,4 +62,9 @@ type Store interface {
 
 	// Delete はセッションを削除する（participants は ON DELETE CASCADE で連動削除）。
 	Delete(ctx context.Context, id string) error
+
+	// DeleteParticipant は個別のゲスト参加者を削除する
+	// （復帰猶予切れによる個別退出、hub.ReturnGracePeriod）。ホストの削除は
+	// Delete（セッション自体の終了）でのみ行い、この関数は呼び出さないこと。
+	DeleteParticipant(ctx context.Context, participantID string) error
 }
