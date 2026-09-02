@@ -1,9 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { Button, FieldError, Input, Label, Modal, TextField } from "@heroui/react";
-import { Pencil } from "lucide-react";
+import { Button, FieldError, Input, Label, Modal, TextField, ToggleButton, ToggleButtonGroup } from "@heroui/react";
+import { Monitor, Moon, Pencil, Sun } from "lucide-react";
 import { AvatarPicker } from "./AvatarPicker";
+import { loadThemeMode, saveThemeMode, type ThemeMode } from "@/lib/theme";
 
 interface ProfileEditModalProps {
   currentDisplayName: string;
@@ -18,10 +19,20 @@ interface ProfileEditModalProps {
 // サーバー側のクールダウン(1参加者あたり5秒に1回まで)超過時のエラーは、
 // LiveSession側でsocket.errorMessageをトーストとして表示する(この画面自体は
 // 楽観的に即座に閉じる)。
+const THEME_OPTIONS: { mode: ThemeMode; icon: typeof Sun; label: string }[] = [
+  { mode: "system", icon: Monitor, label: "システム" },
+  { mode: "light", icon: Sun, label: "ライト" },
+  { mode: "dark", icon: Moon, label: "ダーク" },
+];
+
 export function ProfileEditModal({ currentDisplayName, currentAvatarIcon, onClose, onSave }: ProfileEditModalProps) {
   const [displayName, setDisplayName] = useState(currentDisplayName);
   const [avatarIcon, setAvatarIcon] = useState(currentAvatarIcon);
   const [validationError, setValidationError] = useState<string | null>(null);
+  // themeMode(2026-09-02新設、仕様書§20.3): 表示名・アイコンと違い、選択した
+  // 瞬間に即座に画面へ反映・保存する(下の「保存する」ボタンによる
+  // profile_update送信とは無関係な、端末ローカルの見た目設定のため)。
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => loadThemeMode());
 
   function save() {
     if (displayName.trim() === "") {
@@ -55,6 +66,34 @@ export function ProfileEditModal({ currentDisplayName, currentAvatarIcon, onClos
             <div className="flex flex-col gap-1.5 text-left">
               <Label>アイコン</Label>
               <AvatarPicker value={avatarIcon} onChange={setAvatarIcon} />
+            </div>
+
+            <div className="flex flex-col gap-1.5 text-left">
+              <Label>表示テーマ</Label>
+              <ToggleButtonGroup
+                selectionMode="single"
+                disallowEmptySelection
+                selectedKeys={[themeMode]}
+                onSelectionChange={(keys) => {
+                  const next = [...keys][0] as ThemeMode | undefined;
+                  if (!next) return;
+                  setThemeMode(next);
+                  saveThemeMode(next);
+                }}
+                isDetached
+                fullWidth
+                className="flex w-full min-w-0 gap-2.5"
+              >
+                {THEME_OPTIONS.map((opt) => {
+                  const Icon = opt.icon;
+                  return (
+                    <ToggleButton key={opt.mode} id={opt.mode} className="flex h-auto min-w-0 flex-1 flex-col items-center gap-1 py-2.5 md:h-auto">
+                      <Icon className="size-4.5 shrink-0" aria-hidden />
+                      <span className="truncate">{opt.label}</span>
+                    </ToggleButton>
+                  );
+                })}
+              </ToggleButtonGroup>
             </div>
 
             <Button variant="primary" fullWidth onPress={save}>

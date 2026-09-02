@@ -7,7 +7,7 @@ import { AdSlot } from "./AdSlot";
 import { AvatarPicker } from "./AvatarPicker";
 import { TransportPicker } from "./TransportPicker";
 import { MapView } from "./MapView";
-import { DEFAULT_AVATAR_ICON } from "@/lib/avatars";
+import { avatarIconSrc, DEFAULT_AVATAR_ICON } from "@/lib/avatars";
 import { ApiError, getGuestPreview } from "@/lib/api";
 import { useLiveLocation } from "@/lib/geolocation";
 import { useTransportEtaOptions } from "@/lib/useTransportEtaOptions";
@@ -109,7 +109,18 @@ export function LandingGuest({ sessionId, token, onJoin }: LandingGuestProps) {
           target={previewTarget}
           participants={
             myLive
-              ? [{ id: "preview-self", lat: myLive.lat, lng: myLive.lng, label: displayName || "あなた", isSelf: true, transportMode, arrived: false }]
+              ? [
+                  {
+                    id: "preview-self",
+                    lat: myLive.lat,
+                    lng: myLive.lng,
+                    label: displayName || "あなた",
+                    avatarSrc: avatarIconSrc(avatarIcon),
+                    isSelf: true,
+                    transportMode,
+                    arrived: false,
+                  },
+                ]
               : []
           }
           // refitOnGrowth(2026-09-02新設): 目的地は参加登録前から分かっている

@@ -558,31 +558,47 @@ func (m *Manager) Disconnect(sessionID, participantID string, conn Conn) {
 	}
 }
 
-// Leave はゲストの明示的な「退出する」操作（仕様書§14.3ステップ12）を処理する。
-// 復帰猶予（ReturnGracePeriod）を待たず、即座に恒久的な退出として扱う
-// （ユーザー本人が退出の意思を明示しているため、10分待つ理由が無い。
-// p7残課題「共有中にゲストがリロードすると、ホスト側のチャットに
-// 『退出しました』だけが残ってしまう」の対応 — 恒久退出の確定タイミングを
-// removeParticipantに一本化した上で、明示的な退出だけはこの即時経路を通す）。
-// ホストの「共有停止」はEnd()（セッション全体の終了）を使うため、ここでは
-// ゲストのみを対象とし、ホストトークンで呼ばれた場合はErrForbiddenを返す。
-func (m *Manager) Leave(ctx context.Context, sessionID, participantID string) error {
-	m.mu.Lock()
-	r, ok := m.rooms[sessionID]
-	m.mu.Unlock()
-	if !ok {
-		return session.ErrNotFound
+// Leave はゲストの明示的な「退出する」操作（仕様書§14.3ステップ12、および
+// §5.5のREST版leaveエンドポイント）を処理する。復帰猶予（ReturnGracePeriod）
+// を待たず、即座に恒久的な退出として扱う（ユーザー本人が退出の意思を明示
+// しているため、10分待つ理由が無い。p7残課題「共有中にゲストがリロード
+// すると、ホスト側のチャットに『退出しました』だけが残ってしまう」の対応 —
+// 恒久退出の確定タイミングをremoveParticipantに一本化した上で、明示的な
+// 退出だけはこの即時経路を通す）。ホストの「共有停止」はEnd()（セッション
+// 全体の終了）を使うため、ここではゲストのみを対象とし、ホストトークンで
+// 呼ばれた場合はErrForbiddenを返す。
+//
+// tokenの検証を追加（2026-09-02新設）: 元々WS経由（"leave"メッセージ）
+// でしか呼ばれておらず、その時点でparticipantId（self.ID）は接続確立時の
+// Join()で既にサーバー側が検証済みだった。REST版エンドポイント（共有中に
+// ゲストがトップページ("/")へアクセスし、その場でWebSocket接続を持たない
+// 状態のまま「退出する」を選んだ場合の安全弁、ResumeSessionChoice.tsx参照）
+// を新設するにあたり、こちらはWSの事前認証を経ないため、ここで
+// token_guestの検証を必須にした。ゲストは全員同じtoken_guestを共有する
+// 設計（§5.1）のため、これは「他の任意のゲストの参加を第三者が終了できない」
+// ことまでは保証しない（招待リンクを知っている全員が対象）— これは
+// GetState等、既存の他のゲスト向けエンドポイントと同じ信頼モデルであり、
+// このエンドポイント固有の弱点ではない。
+func (m *Manager) Leave(ctx context.Context, sessionID, token, participantID string) error {
+	r, err := m.getOrLoad(ctx, sessionID)
+	if err != nil {
+		return err
 	}
 
 	r.mu.Lock()
-	p, ok := r.participants[participantID]
+	role, ok := r.rec.RoleForToken(token)
 	if !ok {
 		r.mu.Unlock()
 		return session.ErrNotFound
 	}
-	if p.Role != session.RoleGuest {
+	if role != session.RoleGuest {
 		r.mu.Unlock()
 		return session.ErrForbidden
+	}
+	p, ok := r.participants[participantID]
+	if !ok || p.Role != session.RoleGuest {
+		r.mu.Unlock()
+		return session.ErrNotFound
 	}
 	r.mu.Unlock()
 
@@ -1013,21 +1029,55 @@ func (m *Manager) UpdateProfile(ctx context.Context, sessionID, participantID, d
 
 // End は明示的な「終了」操作を実装する。ホストトークンのみ受理し、
 // 全参加者を切断・削除する（仕様書§5.6）。ゲストトークンは session.ErrForbidden。
-func (m *Manager) End(ctx context.Context, sessionID, token string) error {
-	rec, err := m.recordFor(ctx, sessionID)
+//
+// participantID の一致を要求する(2026-09-02新設、GetState/Joinと同じ理由・
+// §5.8参照): 以前はtoken_hostだけで受理していたため、tokenHostが漏えいして
+// いた場合、位置情報の閲覧やなりすましはできなくとも、第三者が他の参加者の
+// セッションを勝手に終了させることができてしまっていた(可用性への影響)。
+// 正規のホスト本人は常にlocalStorage由来のparticipantIdを送るため、この
+// 変更による影響はない。
+func (m *Manager) End(ctx context.Context, sessionID, token, participantID string) error {
+	r, err := m.getOrLoad(ctx, sessionID)
 	if err != nil {
 		return err
 	}
-	role, ok := rec.RoleForToken(token)
+
+	r.mu.Lock()
+	role, ok := r.rec.RoleForToken(token)
 	if !ok {
+		r.mu.Unlock()
 		return session.ErrNotFound
 	}
 	if role != session.RoleHost {
+		r.mu.Unlock()
 		return session.ErrForbidden
 	}
+	hp := hostParticipant(r)
+	if hp == nil || participantID == "" || participantID != hp.ID {
+		r.mu.Unlock()
+		return session.ErrNotFound
+	}
+	r.mu.Unlock()
 
 	m.teardown(ctx, sessionID, EventSessionEnded, "manual")
 	return nil
+}
+
+// regenerateDisconnectDelay は RegenerateTokens 後、接続中の全クライアントを
+// 強制切断するまでの猶予(新設)。0にせず遅延させているのは、この呼び出し元
+// (ホスト自身)のブラウザがREST応答を受けてWebSocketを新トークンへ張り直す
+// (page.tsxのonTokensRotated → token propの変化 → useCocodeSocketの
+// 再接続エフェクト)のを、サーバー側の強制切断より確実に先行させるため。
+// 猶予後に切断されるのは、ホスト自身の(既に新トークンへ張り替え済みで
+// 実質無効な)古い接続と、旧トークンを持つゲスト・第三者の接続で、
+// 後者は新しい招待リンクが無い限り再接続できなくなる(意図通り)。
+const regenerateDisconnectDelay = 2 * time.Second
+
+// guestConnEntry は RegenerateTokens が「再発行時点で存在した全ゲスト」を
+// 即時退出させる際に使う、参加者IDとその時点の接続(未接続ならnil)の組。
+type guestConnEntry struct {
+	id   string
+	conn Conn
 }
 
 // RegenerateTokens はホスト/ゲスト双方のトークンを新しい値へ差し替える
@@ -1035,9 +1085,22 @@ func (m *Manager) End(ctx context.Context, sessionID, token string) error {
 // (ホスト自身のトークン入り)を送ってしまった」等、トークン漏えいが疑われる
 // 場合にホストが使う安全弁。ホストトークンのみ受理する。
 //
-// 効果は「以後の新規参加・再接続に古いトークンが使えなくなる」ことに限られる
-// — 既に確立済みのWebSocket接続は、それがホスト本人かどうかを区別する手段が
-// ないため、この呼び出し単体では切断しない。
+// 再発行後、新トークンではRoleForTokenが一致しなくなるため、その時点で
+// 存在していた全ゲストは(接続中かどうかを問わず)もう二度と再接続できない
+// ことが確定する。これを「10分の復帰猶予待ちの一時切断」として扱うと、
+// 実際には戻ってこないゲストが復帰猶予中ずっと参加者一覧・参加人数に
+// 残り続けてしまう(ユーザー報告の不具合、2026-09-02対応)。そのため
+// Disconnect()の通常経路は使わず、removeParticipant()で即座に恒久退出させる。
+// 接続中のゲストには恒久退出前に session_ended を送る(2026-09-02新設) —
+// フロントエンドは元々ゲストのsession_ended受信時にNotFoundScreenへ即座に
+// 切り替える設計(LiveSession.tsx参照、ホストが「共有を終了する」と同じ
+// 経路)のため、この1行を送るだけでゲスト側は「即終了」の見た目になる。
+//
+// ホスト自身の接続は個別には切断しない(役割がRoleHostの参加者は削除
+// 対象から除く) — ホストはこの呼び出し元自身であり、REST応答を受けて
+// 新トークンで自らWebSocketを張り直す(§5.4)。ただし念のため、
+// regenerateDisconnectDelay経過時点で(ホストの新接続に置き換わっている
+// はずの)古い接続を含め、その時点で残っている全接続を強制切断する。
 func (m *Manager) RegenerateTokens(ctx context.Context, sessionID, token string) (*session.Record, error) {
 	r, err := m.getOrLoad(ctx, sessionID)
 	if err != nil {
@@ -1045,15 +1108,16 @@ func (m *Manager) RegenerateTokens(ctx context.Context, sessionID, token string)
 	}
 
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	role, ok := r.rec.RoleForToken(token)
 	if !ok {
+		r.mu.Unlock()
 		return nil, session.ErrNotFound
 	}
 	if role != session.RoleHost {
+		r.mu.Unlock()
 		return nil, session.ErrForbidden
 	}
+	r.mu.Unlock()
 
 	newTokenHost, err := session.NewToken()
 	if err != nil {
@@ -1068,25 +1132,44 @@ func (m *Manager) RegenerateTokens(ctx context.Context, sessionID, token string)
 		return nil, err
 	}
 
+	r.mu.Lock()
 	r.rec.TokenHost = newTokenHost
 	r.rec.TokenGuest = newTokenGuest
 	recCopy := *r.rec
-	return &recCopy, nil
-}
-
-// recordFor はメモリ上の room があればそこから、無ければ Postgres から
-// セッション本体だけを取得する（End のトークン検証用）。
-func (m *Manager) recordFor(ctx context.Context, sessionID string) (*session.Record, error) {
-	m.mu.Lock()
-	r, ok := m.rooms[sessionID]
-	m.mu.Unlock()
-	if ok {
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		recCopy := *r.rec
-		return &recCopy, nil
+	guests := make([]guestConnEntry, 0, len(r.participants))
+	for id, p := range r.participants {
+		if p.Role == session.RoleGuest {
+			guests = append(guests, guestConnEntry{id: id, conn: r.conns[id]})
+		}
 	}
-	return m.store.Get(ctx, sessionID)
+	// staleConns は「再発行時点で接続していた全コネクション」のスナップショット
+	// (2026-09-02修正)。以前はregenerateDisconnectDelay経過後にr.connsを
+	// その時点で改めて読み直していたため、遅延の間に新しい招待リンクで
+	// 正規に参加してきたゲスト(「再発行後のリンクをすぐに共有した」場合に
+	// 発生しうる)まで巻き込んで強制切断してしまう不具合があった。ここで
+	// 再発行時点のコネクションだけを確定させ、遅延後はこのスナップショットの
+	// みを閉じる(ホスト自身は新トークンで別の新しいコネクションへ張り替わる
+	// ため、ここに含まれる古い方だけが対象になる)。
+	staleConns := make([]Conn, 0, len(r.conns))
+	for _, c := range r.conns {
+		staleConns = append(staleConns, c)
+	}
+	r.mu.Unlock()
+
+	for _, g := range guests {
+		if g.conn != nil {
+			_ = g.conn.Send(reasonEventMsg{Type: EventSessionEnded, Reason: "link_regenerated"})
+		}
+		m.removeParticipant(ctx, sessionID, g.id)
+	}
+
+	time.AfterFunc(regenerateDisconnectDelay, func() {
+		for _, c := range staleConns {
+			_ = c.Close()
+		}
+	})
+
+	return &recCopy, nil
 }
 
 // expire は失効タイマー発火時に呼ばれ、TTL 切れとしてセッションを片付ける。

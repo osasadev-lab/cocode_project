@@ -179,19 +179,10 @@ button {
   animation: cocode-pulse 2.2s ease-out infinite;
 }
 
-.cocode-marker-a {
-  background: var(--accent-a);
-}
-.cocode-marker-a .cocode-marker-pulse {
-  background: var(--accent-a);
-}
-
-.cocode-marker-b {
-  background: var(--accent-b);
-}
-.cocode-marker-b .cocode-marker-pulse {
-  background: var(--accent-b);
-}
+/* マーカー本体(.cocode-marker-avatar)・波紋(.cocode-marker-pulse)の背景色は、
+   参加者ごとにランダム割り当てた色をMapView.tsx側でインラインstyleとして
+   直接設定する(2026-09-02改訂、参加者の色分けを固定2色から可変パレットへ
+   拡張したのに伴い、以前ここにあった.cocode-marker-a/-bの固定クラスは廃止)。 */
 
 .cocode-marker-arrived-badge {
   position: absolute;
@@ -329,25 +320,28 @@ button {
   white-space: nowrap;
 }
 
-/* ---------- フォンモックアップ(CSSのみで構成、ホストトップページのヒーロー用) ---------- */
-/* 2026-08-31ブラッシュアップ: 構図・配色(ガラスモーフィズム+ブランドグラデーション+
-   フォンモックアップ)は維持したまま、静→動の演出を追加した。全アニメーションは
-   prefers-reduced-motion: no-preference の場合のみ有効にし、それ以外の環境では
-   従来通りの静止した見た目にフォールバックする。2026-09-02改訂: 周囲の並木の
-   絵文字装飾(旧🌳)は撤去し、フォン自体の演出のみ残した。 */
+/* ---------- ヒーービジュアル(ホストトップページ、2026-09-02全面刷新) ---------- */
+/* 旧実装は「スマホ枠の中に1本の点線ルート」という、宅配追跡アプリ等で
+   見飽きた構図で「ダサい」というユーザー指摘を受けた。cocodeの本質は
+   単なる1点への移動ではなく「複数人が1つの待ち合わせ地点に集まる」ことなので、
+   実際のアバターアイコン3個が目的地ピンへ向かって集まり、合流の瞬間に
+   波紋(ライブ地図の到着演出 cocode-pulse と同じキーフレーム)が広がる、
+   という構図に変更した。アバターバッジ(白縁+色リング)・波紋は
+   ライブ地図の参加者マーカー(.cocode-marker-avatar等、上記)と同じ視覚言語を
+   流用し、トップページと実際の利用画面の見た目を連続させている。
+   スマホ枠・浮遊演出は撤去(フラットな背景の光彩のみ残す)。
+   全アニメーションはprefers-reduced-motion: no-preferenceの場合のみ有効にし、
+   それ以外の環境では合流済みの静止した見た目にフォールバックする。 */
 
-.cocode-phone-mockup {
+.cocode-hero-visual {
   position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: clamp(4px, 4vw, 22px);
   width: 100%;
+  height: clamp(170px, 46vw, 220px);
 }
 
-/* フォン背後のブランドグラデーションの光彩。ゆっくり明滅させ、フラットな
-   印象を和らげる(2026-08-31新設)。 */
-.cocode-phone-glow {
+/* 背後のブランドグラデーションの光彩。ゆっくり明滅させ、フラットな印象を
+   和らげる(旧cocode-phone-glowを踏襲)。 */
+.cocode-hero-glow {
   position: absolute;
   left: 50%;
   top: 50%;
@@ -362,94 +356,96 @@ button {
   z-index: 0;
 }
 
-.cocode-phone-frame {
-  position: relative;
-  z-index: 1;
-  width: clamp(112px, 30vw, 148px);
-  aspect-ratio: 220 / 260;
-  border-radius: 26px;
-  padding: 8px;
-  background: linear-gradient(160deg, var(--surface-2), var(--surface));
-  border: 1px solid var(--surface-border);
-  box-shadow: var(--shadow-soft);
-  transform: rotate(-3deg);
-}
-
-.cocode-phone-notch {
+/* 待ち合わせ地点のピン(ライブ地図の目的地マーカーと同色 #ef4444 で統一)。 */
+.cocode-hero-pin-wrap {
   position: absolute;
-  top: 8px;
   left: 50%;
-  transform: translateX(-50%);
-  width: 34%;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--surface-border);
-  z-index: 1;
+  top: 60%;
+  z-index: 2;
 }
 
-.cocode-phone-screen {
+.cocode-hero-pin {
   position: relative;
-  width: 100%;
-  height: 100%;
-  border-radius: 18px;
-  overflow: hidden;
-  background: radial-gradient(circle at 30% 20%, rgba(59, 130, 246, 0.18), transparent 55%),
-    radial-gradient(circle at 75% 80%, rgba(16, 185, 129, 0.16), transparent 55%), var(--bg);
-}
-
-.cocode-phone-route {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-}
-
-.cocode-phone-pin {
-  position: absolute;
-  font-size: 16px;
+  color: #ef4444;
   transform: translate(-50%, -100%);
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.4));
+  filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.35));
 }
 
-.cocode-phone-pin-start {
-  left: 16.4%;
-  top: 88%;
-  font-size: 12px;
+/* 合流の瞬間に広がる波紋。ライブ地図の到着演出(cocode-pulse、上記)と
+   同じキーフレームを再利用する。 */
+.cocode-hero-pin-pulse {
+  position: absolute;
+  left: 50%;
+  top: 60%;
+  width: 34px;
+  height: 34px;
+  transform: translate(-50%, -100%);
+  border-radius: 999px;
+  background: #ef4444;
+  opacity: 0;
+  z-index: 1;
+  pointer-events: none;
 }
 
-.cocode-phone-pin-end {
-  left: 80%;
-  top: 18%;
+/* アバターバッジ(ライブ地図の.cocode-marker-avatarと同じ構造・縮小版)。
+   各アイコンの開始位置は--start-x/--start-y(インラインstyle、LandingHost.tsx参照)
+   で個別に指定し、目的地ピンの位置(50%, 60%)を共通のtransform基点にする。 */
+.cocode-hero-avatar-wrap {
+  position: absolute;
+  left: 50%;
+  top: 60%;
+  z-index: 3;
+  transform: translate(-50%, -50%) translate(var(--start-x), var(--start-y));
 }
 
-/* 経路上を移動する小さなドット(2026-08-31新設)。SVG側でこの円の中心を
-   ルートの始点に配置し、animateMotion(下記JSX参照)でルートに沿って
-   ループ移動させる。 */
-.cocode-phone-traveler {
-  fill: var(--brand-to);
-  filter: drop-shadow(0 0 4px var(--brand-to));
+.cocode-hero-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 3px solid white;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cocode-hero-avatar-icon {
+  width: 80%;
+  height: 80%;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+.cocode-hero-avatar-ring-a {
+  background: var(--accent-a);
+}
+.cocode-hero-avatar-ring-b {
+  background: var(--accent-b);
+}
+.cocode-hero-avatar-ring-c {
+  background: #8b5cf6;
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .cocode-phone-glow {
-    animation: cocode-phone-glow-pulse 4.5s ease-in-out infinite;
+  .cocode-hero-glow {
+    animation: cocode-hero-glow-pulse 4.5s ease-in-out infinite;
   }
 
-  .cocode-phone-frame {
-    animation: cocode-phone-float 4s ease-in-out infinite;
+  .cocode-hero-avatar-wrap {
+    animation: cocode-hero-converge 6s ease-in-out infinite;
+    animation-delay: var(--start-delay, 0s);
   }
 
-  .cocode-phone-route path {
-    stroke-dashoffset: 0;
-    animation: cocode-phone-route-flow 2.4s linear infinite;
+  .cocode-hero-pin {
+    animation: cocode-hero-pin-bounce 6s ease-in-out infinite;
   }
 
-  .cocode-phone-traveler {
-    animation: cocode-phone-traveler-fade 3.6s ease-in-out infinite;
+  .cocode-hero-pin-pulse {
+    animation: cocode-hero-pin-pulse-ring 6s ease-out infinite;
   }
 }
 
-@keyframes cocode-phone-glow-pulse {
+@keyframes cocode-hero-glow-pulse {
   0%,
   100% {
     opacity: 0.16;
@@ -461,29 +457,63 @@ button {
   }
 }
 
-@keyframes cocode-phone-float {
-  0%,
-  100% {
-    transform: rotate(-3deg) translateY(0);
+/* 0%: 開始位置でフェードイン → 46%〜64%: 目的地ピンの位置に集まって
+   しばらく留まる(「合流」の間) → フェードアウトしながら開始位置へ戻る。
+   opacityが0の間に位置が戻るため、ループの継ぎ目は見えない。 */
+@keyframes cocode-hero-converge {
+  0% {
+    transform: translate(-50%, -50%) translate(var(--start-x), var(--start-y)) scale(0.85);
+    opacity: 0;
   }
-  50% {
-    transform: rotate(-3deg) translateY(-6px);
-  }
-}
-
-@keyframes cocode-phone-route-flow {
-  to {
-    stroke-dashoffset: -24;
-  }
-}
-
-@keyframes cocode-phone-traveler-fade {
-  0%,
-  100% {
-    opacity: 0.4;
-  }
-  50% {
+  14% {
     opacity: 1;
+  }
+  46%,
+  64% {
+    transform: translate(-50%, -50%) translate(0, 0) scale(1);
+    opacity: 1;
+  }
+  88% {
+    opacity: 0;
+  }
+  100% {
+    transform: translate(-50%, -50%) translate(var(--start-x), var(--start-y)) scale(0.85);
+    opacity: 0;
+  }
+}
+
+@keyframes cocode-hero-pin-bounce {
+  0%,
+  40% {
+    transform: translate(-50%, -100%) scale(1);
+  }
+  46% {
+    transform: translate(-50%, -100%) scale(1.3);
+  }
+  52% {
+    transform: translate(-50%, -100%) scale(1);
+  }
+  100% {
+    transform: translate(-50%, -100%) scale(1);
+  }
+}
+
+@keyframes cocode-hero-pin-pulse-ring {
+  0%,
+  40% {
+    opacity: 0;
+    transform: translate(-50%, -100%) scale(0.5);
+  }
+  44% {
+    opacity: 0.5;
+  }
+  64% {
+    opacity: 0;
+    transform: translate(-50%, -100%) scale(2.6);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -100%) scale(2.6);
   }
 }
 

@@ -22,6 +22,39 @@ const TARGET_MARKER_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 
 // 到着バッジ用。
 const ARRIVED_BADGE_SVG = `<svg ${LUCIDE_SVG_ATTRS} width="11" height="11"><path d="M20 6 9 17l-5-5" /></svg>`;
 
+// 参加者マーカー・経路線の色パレット(2026-09-02新設)。以前は自分=青
+// (--accent-a)・自分以外全員=オレンジ(--accent-b)の2色固定だったため、
+// 3人以上のゲストが同時参加すると地図上で誰が誰か区別できなかった
+// (全員同じ色のマーカーが並ぶだけだった)。参加者ごとに(自分も含めて)
+// この中からランダムに1色を割り当て、以後そのセッションが続く限り
+// 同じ色を使い続ける(getOrAssignParticipantColor参照)。経路線の色も
+// マーカーと同じ色を使う(§呼び出し元)。
+const PARTICIPANT_COLORS = [
+  "#3b82f6", // blue(--accent-a相当)
+  "#f59e0b", // amber(--accent-b相当)
+  "#8b5cf6", // violet
+  "#10b981", // emerald
+  "#ec4899", // pink
+  "#06b6d4", // cyan
+];
+
+// getOrAssignParticipantColor: participantIdに紐づく色をcacheから返す。
+// 未割り当てなら、その時点でactiveIdsに含まれる(＝現在セッションに残っている)
+// 他の参加者が使っていない色を優先してランダムに選ぶ(参加者数が
+// パレットの色数以下である限り、全員が異なる色になることを保証する)。
+// 既に退出した参加者のcacheエントリは呼び出し元(MapView側のクリーンアップ)
+// が削除する想定 — 削除されればここでのused集合からも自然に外れる。
+function getOrAssignParticipantColor(id: string, cache: Map<string, string>, activeIds: Set<string>): string {
+  const existing = cache.get(id);
+  if (existing) return existing;
+  const used = new Set([...cache.entries()].filter(([pid]) => activeIds.has(pid)).map(([, color]) => color));
+  const available = PARTICIPANT_COLORS.filter((c) => !used.has(c));
+  const pool = available.length > 0 ? available : PARTICIPANT_COLORS;
+  const color = pool[Math.floor(Math.random() * pool.length)];
+  cache.set(id, color);
+  return color;
+}
+
 // OSRMで経路取得する移動手段("walk"|"car")。電車モードはOSRMを使わず、
 // 別ロジック(drawTrainRoute参照)で描画する。
 type RouteProfile = "walk" | "car";
@@ -139,7 +172,7 @@ function upsertLiveMarker(
   map: maplibregl.Map,
   markersRef: MutableRefObject<Map<string, LiveMarkerEntry>>,
   id: string,
-  opts: { tone: "a" | "b"; label: string; avatarSrc?: string; arrived?: boolean },
+  opts: { color: string; label: string; avatarSrc?: string; arrived?: boolean },
   lngLat: LngLatLike
 ): void {
   let entry = markersRef.current.get(id);
@@ -147,9 +180,11 @@ function upsertLiveMarker(
     const wrap = document.createElement("div");
     wrap.className = "cocode-marker-live-wrap";
     const ring = document.createElement("div");
-    ring.className = `cocode-marker-avatar cocode-marker-${opts.tone}`;
+    ring.className = "cocode-marker-avatar";
+    ring.style.backgroundColor = opts.color;
     const pulse = document.createElement("span");
     pulse.className = "cocode-marker-pulse";
+    pulse.style.backgroundColor = opts.color;
     const icon = document.createElement("img");
     icon.className = "cocode-marker-avatar-icon";
     icon.alt = "";
@@ -328,6 +363,10 @@ export function MapView({
   const mapRef = useRef<maplibregl.Map | null>(null);
   const targetMarkerRef = useRef<maplibregl.Marker | null>(null);
   const markersRef = useRef<Map<string, LiveMarkerEntry>>(new Map());
+  // participantColorRef: 参加者ごとに割り当てたマーカー・経路線の色
+  // (getOrAssignParticipantColor参照)。一度割り当てたら、そのセッション
+  // (=このMapViewインスタンスの生存期間)中は変わらない。
+  const participantColorRef = useRef<Map<string, string>>(new Map());
   // fittedPointCountRef: 直近でmaybeFitBoundsが実際にフィットした際の地点数
   // (0=まだ一度もフィットしていない)。refitOnGrowth時、この数より地点数が
   // 増えた場合のみ再フィットする(下記maybeFitBounds参照)。
@@ -407,8 +446,13 @@ export function MapView({
       zoom: 12,
       attributionControl: false,
     });
-    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
+    // 追加順に注意(2026-09-02修正): MapLibreは同じコーナーへの新規コントロールを
+    // コンテナの先頭に挿入する(float: rightで右詰め)ため、後から追加した方が
+    // 見た目上「上」に来る。ズームボタン(+/-)の下にクレジット表記(©...)を
+    // 出したいので、AttributionControlを先に、NavigationControlを後に追加する
+    // (逆順だとクレジットがズームボタンの上に来てしまっていた)。
     map.addControl(new maplibregl.AttributionControl({ compact: true }));
+    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
 
     // 地図タップ時、待ち合わせ地点選択モードなら座標を親コンポーネントへ通知する。
     // pickingTargetがtrueの間だけタップを目的地候補として通知する
@@ -546,15 +590,10 @@ export function MapView({
 
     for (const p of participants) {
       if (!isFiniteLatLng(p.lat, p.lng)) continue;
+      const color = getOrAssignParticipantColor(p.id, participantColorRef.current, currentIds);
       activeRouteIdsRef.current.add(p.id);
-      routeColorRef.current.set(p.id, p.isSelf ? "#3b82f6" : "#f97316");
-      upsertLiveMarker(
-        map,
-        markersRef,
-        p.id,
-        { tone: p.isSelf ? "a" : "b", label: p.label, avatarSrc: p.avatarSrc, arrived: p.arrived },
-        [p.lng, p.lat]
-      );
+      routeColorRef.current.set(p.id, color);
+      upsertLiveMarker(map, markersRef, p.id, { color, label: p.label, avatarSrc: p.avatarSrc, arrived: p.arrived }, [p.lng, p.lat]);
     }
 
     ensureRouteLayers();

@@ -200,6 +200,7 @@ func (h *Handler) serve(c *gin.Context) {
 	}
 
 	// 4. 接続が切れるまでメッセージを受信し続ける。
+readLoop:
 	for {
 		var msg inboundMsg
 		if err := wsConn.ReadJSON(&msg); err != nil {
@@ -257,11 +258,21 @@ func (h *Handler) serve(c *gin.Context) {
 		case "leave":
 			// ゲストの明示的な「退出する」操作（仕様書§14.3ステップ12、新設）。
 			// 復帰猶予を待たず即座に恒久退出として扱う（hub.Leave参照）。
-			// クライアントはこの直後に自らWebSocketを閉じる想定だが、閉じ忘れても
-			// 実害はない（続くDisconnectは参加者が既に消えているため無視される）。
-			if err := h.hub.Leave(ctx, auth.SessionID, self.ID); err != nil {
+			//
+			// 成功時はここで読み取りループごと終了し、サーバー側から接続を閉じる
+			// (defer wsConn.Close()、2026-09-02修正)。以前はクライアント側が
+			// "leave"送信の直後に自らclose()する設計だったが、ブラウザによっては
+			// send()した"leave"フレームが実際に送信される前にclose()で接続が
+			// 切られてしまうことがあり、その場合サーバーは"leave"を受け取れないまま
+			// ただの切断として扱ってしまう(=復帰猶予10分待ちの経路に乗ってしまい、
+			// 退出したのに参加人数がすぐ減らない不具合の原因だった)。ここで
+			// hub.Leave(=removeParticipant、恒久退出・ブロードキャスト済み)が
+			// 確実に完了してから接続を閉じることで、この競合を無くす。
+			if err := h.hub.Leave(ctx, auth.SessionID, auth.Token, self.ID); err != nil {
 				_ = conn.Send(map[string]string{"type": "error", "message": "退出処理に失敗しました"})
+				break
 			}
+			break readLoop
 		default:
 			// 未知の type は無視する。
 		}

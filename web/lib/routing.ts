@@ -33,18 +33,30 @@ const FALLBACK_CRUISE_KMH: Record<"walk" | "car", number> = {
   car: 25, // 信号待ち等を見込んだ市街地の目安速度
 };
 
+// 車モードの補正係数(2026-09-02新設)。FOSSGISのOSRM routed-carは、maxspeed
+// タグが未設定の道路(特に住宅街の細街路)に低めのデフォルト速度を当てはめる
+// 傾向があり、実際の走行より所要時間が一貫して長めに出るとユーザーからの
+// フィードバックで確認された。API・ルーティングエンジン自体は変更せず、
+// 生のOSRM所要時間にこの係数を掛けて短縮する形で補正する(0.85 = 15%短縮)。
+// 実測との乖離が続く場合はこの値をさらに調整すること。
+const CAR_DURATION_CORRECTION_FACTOR = 0.85;
+
 // plausibleDurationSeconds は、距離に対して所要時間が非現実的な場合に
 // 目安巡航速度から再計算した値へ差し替える。戻り値は必ず整数秒にする
 // (サーバー側のETASecondsが*int型のため、小数のまま送るとJSONの
 // アンマーシャルに失敗してWebSocket接続そのものが切断されてしまう)。
+// 車モードについては、上記CAR_DURATION_CORRECTION_FACTORによる補正を
+// 先に適用してから妥当性チェックを行う。
 function plausibleDurationSeconds(
   profile: "walk" | "car",
   distanceMeters: number,
   durationSeconds: number
 ): number {
-  if (durationSeconds <= 0) return Math.round(durationSeconds);
-  const impliedKmh = distanceMeters / 1000 / (durationSeconds / 3600);
-  if (impliedKmh <= MAX_PLAUSIBLE_SPEED_KMH[profile]) return Math.round(durationSeconds);
+  const corrected =
+    profile === "car" ? durationSeconds * CAR_DURATION_CORRECTION_FACTOR : durationSeconds;
+  if (corrected <= 0) return Math.round(corrected);
+  const impliedKmh = distanceMeters / 1000 / (corrected / 3600);
+  if (impliedKmh <= MAX_PLAUSIBLE_SPEED_KMH[profile]) return Math.round(corrected);
   return Math.round((distanceMeters / 1000 / FALLBACK_CRUISE_KMH[profile]) * 3600);
 }
 

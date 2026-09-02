@@ -46,6 +46,7 @@ func (h *Handler) Register(r *gin.Engine) {
 	r.GET("/api/sessions/:id/state", h.getState)
 	r.POST("/api/sessions/:id/end", h.endSession)
 	r.POST("/api/sessions/:id/regenerate-link", h.regenerateLink)
+	r.POST("/api/sessions/:id/leave", h.leaveSession)
 	r.POST("/api/eta/transit", h.transitLimiter.middleware(), h.etaTransit)
 }
 
@@ -208,12 +209,35 @@ func (h *Handler) getState(c *gin.Context) {
 }
 
 // endSession は POST /api/sessions/:id/end を実装する。
-// ホストのトークンのみ受理する（仕様書§5.6）。ゲストトークンでの呼び出しは403。
+// ホストのトークンに加え、ホスト自身のparticipantIdの一致も必須とする
+// （仕様書§5.6・§5.8、2026-09-02改訂）。ゲストトークンでの呼び出しは403、
+// participantId不一致(token_hostだけを知る第三者からの呼び出し等)は404。
 func (h *Handler) endSession(c *gin.Context) {
 	id := c.Param("id")
 	token := c.Query("token")
+	participantID := c.Query("participantId")
 
-	if err := h.hub.End(c.Request.Context(), id, token); err != nil {
+	if err := h.hub.End(c.Request.Context(), id, token, participantID); err != nil {
+		respondSessionErr(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// leaveSession は POST /api/sessions/:id/leave を実装する（新設）。ゲストが
+// アクティブなWebSocket接続を持たない状態（共有中にトップページ("/")へ
+// アクセスし、ResumeSessionChoice経由で「退出する」を選んだ場合等）でも、
+// 復帰猶予(10分)を待たず即座に恒久退出できるようにする安全弁。以前はこの
+// 画面からの「退出」がローカルのセッション情報を消すだけでサーバーに何も
+// 伝えていなかったため、他の参加者から見て最大10分間参加人数が減らない
+// 不具合があった（§5.6.1参照）。ゲストのトークン(token_guest)のみ受理し、
+// ホストトークンでの呼び出しは403。
+func (h *Handler) leaveSession(c *gin.Context) {
+	id := c.Param("id")
+	token := c.Query("token")
+	participantID := c.Query("participantId")
+
+	if err := h.hub.Leave(c.Request.Context(), id, token, participantID); err != nil {
 		respondSessionErr(c, err)
 		return
 	}

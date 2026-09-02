@@ -6,7 +6,7 @@ import { MapView } from "./MapView";
 import { AvatarPicker } from "./AvatarPicker";
 import { TransportPicker } from "./TransportPicker";
 import { DestinationPickerPanel } from "./DestinationPickerPanel";
-import { DEFAULT_AVATAR_ICON } from "@/lib/avatars";
+import { avatarIconSrc, DEFAULT_AVATAR_ICON } from "@/lib/avatars";
 import { createSession } from "@/lib/api";
 import { useDestinationPicker } from "@/lib/useDestinationPicker";
 import { useLiveLocation } from "@/lib/geolocation";
@@ -145,7 +145,18 @@ export function CreateForm({ onCreated, onCancel }: CreateFormProps) {
         target={previewTarget}
         participants={
           myLive
-            ? [{ id: "preview-self", lat: myLive.lat, lng: myLive.lng, label: displayName || "あなた", isSelf: true, transportMode, arrived: false }]
+            ? [
+                {
+                  id: "preview-self",
+                  lat: myLive.lat,
+                  lng: myLive.lng,
+                  label: displayName || "あなた",
+                  avatarSrc: avatarIconSrc(avatarIcon),
+                  isSelf: true,
+                  transportMode,
+                  arrived: false,
+                },
+              ]
             : []
         }
         pickingTarget={picker.step === "picking"}

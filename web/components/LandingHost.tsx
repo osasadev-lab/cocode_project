@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { Unlock, Zap, ShieldCheck, MapPin, Flag, Menu as MenuIcon } from "lucide-react";
+import { useEffect, useState, type CSSProperties } from "react";
+import { Unlock, Zap, ShieldCheck, MapPin, Menu as MenuIcon } from "lucide-react";
 import { Button, Modal } from "@heroui/react";
 import { AdSlot } from "./AdSlot";
 import { Sidebar, type SidebarModalKind } from "./Sidebar";
@@ -28,6 +28,39 @@ const FEATURES = [
   { icon: ShieldCheck, label: "プライバシー保護", tone: "blue" as const },
 ];
 
+// ヒーービジュアル(2026-09-02全面刷新): 「複数人が1つの待ち合わせ地点に
+// 集まる」というcocodeの本質をそのまま表現するため、実際のアバターアイコン
+// 3個が中央の目的地ピンへ向かって集まるアニメーションにした(globals.cssの
+// 「ヒーービジュアル」セクション参照)。startX/startYは開始位置への
+// オフセット(px)、ringは合流時のリング色(MapView.tsxのPARTICIPANT_COLORS
+// と同じ配色から抜粋)、delayは合流タイミングを少しずらして人が集まってくる
+// 自然さを出すための開始遅延(秒)。
+//
+// ring(2026-09-02改訂): 当初アイコンごとに固定していたが、「背景(リング色)は
+// ランダムに振り分けよう」との指定により、表示のたびにシャッフルするよう
+// 変更した(下記HeroRingsコンポーネント参照)。アイコン自体(src)・開始位置・
+// 合流タイミングは固定のまま、リング色の組み合わせだけを毎回入れ替える。
+const HERO_RING_COLORS: ("a" | "b" | "c")[] = ["a", "b", "c"];
+
+const HERO_AVATARS: { id: string; src: string; startX: string; startY: string; delay: string }[] = [
+  { id: "hud_player_pink", src: "/avatars/hud_player_pink.png", startX: "-92px", startY: "-58px", delay: "0s" },
+  { id: "hud_player_blue", src: "/avatars/hud_player_blue.png", startX: "-78px", startY: "56px", delay: "0.25s" },
+  { id: "hud_player_green", src: "/avatars/hud_player_green.png", startX: "92px", startY: "-14px", delay: "0.5s" },
+];
+
+// シャッフルは常にHERO_RING_COLORSの並び(a,b,c)から開始する既定値でレンダーし
+// (静的書き出し(output: "export")のためサーバー/クライアントで結果が食い違う
+// Math.random()を初期レンダーに使うとハイドレーション不整合になる)、
+// マウント後のuseEffect内でのみランダムに並べ替える。
+function shuffle<T>(items: T[]): T[] {
+  const result = [...items];
+  for (let i = result.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [result[i], result[j]] = [result[j], result[i]];
+  }
+  return result;
+}
+
 const STEPS = [
   "表示名・アイコンを入力",
   "目的地を設定(現在地/地図タップ/住所検索)",
@@ -40,6 +73,13 @@ type ModalKind = SidebarModalKind | null;
 export function LandingHost({ onStart }: LandingHostProps) {
   const [modal, setModal] = useState<ModalKind>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // heroRingColors: 表示のたびにリング色をランダムに振り分ける(2026-09-02新設)。
+  // 既定値(a,b,c)のままサーバー/初回レンダーを描画し、マウント後にだけ
+  // シャッフルすることでハイドレーション不整合を避ける。
+  const [heroRingColors, setHeroRingColors] = useState<("a" | "b" | "c")[]>(HERO_RING_COLORS);
+  useEffect(() => {
+    setHeroRingColors(shuffle(HERO_RING_COLORS));
+  }, []);
 
   return (
     <div className="cocode-landing">
@@ -62,39 +102,23 @@ export function LandingHost({ onStart }: LandingHostProps) {
           今いる場所を、<span className="cocode-landing-headline-accent">大切な人</span>とリアルタイムで共有
         </h1>
 
-        <div className="cocode-phone-mockup" aria-hidden>
-          <div className="cocode-phone-glow" />
-          <div className="cocode-phone-frame">
-            <div className="cocode-phone-notch" />
-            <div className="cocode-phone-screen">
-              <svg viewBox="0 0 220 200" className="cocode-phone-route" preserveAspectRatio="none">
-                <path
-                  id="cocode-route-path"
-                  d="M36,168 C60,120 40,96 84,86 C128,76 118,44 176,28"
-                  fill="none"
-                  stroke="url(#cocode-route-grad)"
-                  strokeWidth="4"
-                  strokeDasharray="1 11"
-                  strokeLinecap="round"
-                />
-                <defs>
-                  <linearGradient id="cocode-route-grad" x1="0" y1="1" x2="1" y2="0">
-                    <stop offset="0" style={{ stopColor: "var(--brand-from)" }} />
-                    <stop offset="1" style={{ stopColor: "var(--brand-to)" }} />
-                  </linearGradient>
-                </defs>
-                {/* 経路上をループ移動する小さなドット。現在地から目的地へ向かって
-                    「移動している」感を出す(2026-08-31新設)。 */}
-                <circle className="cocode-phone-traveler" r="3.5">
-                  <animateMotion dur="3.6s" repeatCount="indefinite" rotate="auto">
-                    <mpath href="#cocode-route-path" />
-                  </animateMotion>
-                </circle>
-              </svg>
-              <MapPin className="cocode-phone-pin cocode-phone-pin-start" fill="currentColor" />
-              <Flag className="cocode-phone-pin cocode-phone-pin-end" fill="currentColor" />
-            </div>
+        <div className="cocode-hero-visual" aria-hidden>
+          <div className="cocode-hero-glow" />
+          <div className="cocode-hero-pin-pulse" />
+          <div className="cocode-hero-pin-wrap">
+            <MapPin className="cocode-hero-pin" size={30} fill="currentColor" />
           </div>
+          {HERO_AVATARS.map((a, i) => (
+            <div
+              key={a.id}
+              className="cocode-hero-avatar-wrap"
+              style={{ "--start-x": a.startX, "--start-y": a.startY, "--start-delay": a.delay } as CSSProperties}
+            >
+              <div className={`cocode-hero-avatar cocode-hero-avatar-ring-${heroRingColors[i]}`}>
+                <img src={a.src} alt="" className="cocode-hero-avatar-icon" />
+              </div>
+            </div>
+          ))}
         </div>
 
         <div className="cocode-landing-features">

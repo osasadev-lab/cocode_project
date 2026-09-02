@@ -265,10 +265,20 @@ export function LiveSession({
 
   // サーバーからの拒否(profile_updateのクールダウン超過・expressionの
   // クールダウン超過・不正な値など)をトーストで表示する(2026-08-31新設)。
+  //
+  // socket.joinFailed時は表示しない(2026-09-02修正): 参加(再接続)自体が
+  // 失敗した場合、下のsocket.joinFailedの分岐でNotFoundScreen(または
+  // page.tsx側のonJoinFailed経由でゲスト用トップページへのフォールバック)
+  // に置き換わり、いずれも状況を説明する専用の画面がそのまま表示される。
+  // 「退出したゲストが再訪識別ID(§14.2)経由で自動的に再接続を試みて失敗し、
+  // 通常の参加フローへ静かにフォールバックする」ような、ユーザーの操作ミス
+  // ではない内部リトライの失敗でも同じerrorMessageが飛んでくるため、
+  // このケースまで赤いトーストで警告してしまうと不安を与えるだけで
+  // 何の助けにもならない(結果画面が既に状況を説明しているため冗長でもある)。
   useEffect(() => {
-    if (!socket.errorMessage) return;
+    if (!socket.errorMessage || socket.joinFailed) return;
     toast.danger(socket.errorMessage);
-  }, [socket.errorMessage]);
+  }, [socket.errorMessage, socket.joinFailed]);
 
   // 参加者が切断した際の通知(仕様書§0、2026-08-31実装)。マーカー・経路・ETA
   // 表示自体はuseCocodeSocket側で既に正しく削除されているが、通知UI自体は
@@ -448,7 +458,7 @@ export function LiveSession({
     setEnding(true);
     setEndError(null);
     try {
-      await endSession(sessionId, token);
+      await endSession(sessionId, token, socket.selfParticipantId ?? "");
       clearSession();
       setLocalEnded(true);
     } catch (e) {

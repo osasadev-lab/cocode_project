@@ -59,3 +59,6 @@ export const LOCAL_STORAGE_KEY = "cocode:session";
 // 際のキー名。上記LOCAL_STORAGE_KEY(単一のアクティブセッション用)とは
 // 別物で、「退出」操作でもクリアされない(lib/storage.ts参照)。
 export const GUEST_IDENTITY_STORAGE_KEY = "cocode:guest-identities";
+// 手動テーマ切り替え(システム/ライト/ダーク、2026-09-02新設)の選択を保存する
+// 際のキー名。値が無い(未設定)場合は「システム」扱いとする(lib/theme.ts参照)。
+export const THEME_STORAGE_KEY = "cocode:theme";

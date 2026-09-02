@@ -494,10 +494,22 @@ export function useCocodeSocket(sessionId: string | null, auth: SocketAuth | nul
   // チャットに「退出しました」が記録されていた。ここで先に"leave"フレームを
   // 送ることで、サーバーに「復帰猶予を待たず即座に恒久退出扱いにしてよい」
   // ことを明示的に伝える(server/internal/hub/hub.goのLeave参照)。
+  //
+  // 2026-09-02修正: 以前はsend()の直後に自らws.close()していたが、ブラウザに
+  // よっては送信直後のclose()で"leave"フレームが実際に送出される前に接続が
+  // 切られてしまうことがあり、その場合サーバーは"leave"を受け取れず、ただの
+  // 切断(=復帰猶予10分待ちの経路)として扱ってしまっていた(退出したのに
+  // 相手側の参加人数がすぐ減らない不具合の原因)。サーバー側は"leave"を
+  // 処理した後、自ら接続を閉じるようになっている(ws/handler.go参照)ため、
+  // ここでは明示的なclose()を行わずサーバー側の切断を待つ。ネットワーク不調等
+  // でサーバーからの応答が届かない場合に備え、安全弁として一定時間後には
+  // クライアント側からも閉じる。
   const leave = useCallback(() => {
+    closedByUser.current = true;
+    if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
     send({ type: "leave" });
-    disconnect();
-  }, [disconnect]);
+    setTimeout(() => wsRef.current?.close(), 1000);
+  }, []);
 
   // sendLocationUpdate は自分側の位置情報更新をサーバーへ送信する。
   // extraは電車モードのETA・経路等、kind="live"の場合のみ意味を持つ(仕様書§7.1.1)。
