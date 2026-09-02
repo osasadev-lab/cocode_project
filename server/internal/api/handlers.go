@@ -45,6 +45,7 @@ func (h *Handler) Register(r *gin.Engine) {
 	r.POST("/api/sessions", h.createLimiter.middleware(), h.createSession)
 	r.GET("/api/sessions/:id/state", h.getState)
 	r.POST("/api/sessions/:id/end", h.endSession)
+	r.POST("/api/sessions/:id/regenerate-link", h.regenerateLink)
 	r.POST("/api/eta/transit", h.transitLimiter.middleware(), h.etaTransit)
 }
 
@@ -73,26 +74,26 @@ type createSessionResp struct {
 func (h *Handler) createSession(c *gin.Context) {
 	var req createSessionReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON body"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "リクエストの形式が正しくありません"})
 		return
 	}
 	if !validLatLng(req.Lat, req.Lng) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "lat and lng are required and must be valid coordinates"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "緯度・経度を正しく指定してください"})
 		return
 	}
 	if !session.ValidDisplayName(req.DisplayName) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "displayName is required and must be 20 characters or fewer"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "表示名を入力してください(20文字以内)"})
 		return
 	}
 	if !session.ValidAvatarIcon(req.AvatarIcon) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "avatarIcon must be one of the supported icons"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "アイコンの指定が正しくありません"})
 		return
 	}
 
 	rec, host, err := h.hub.Create(c.Request.Context(), req.Lat, req.Lng, req.Address, req.DisplayName, req.AvatarIcon)
 	if err != nil {
 		h.log.Error("create session failed", "err", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create session"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "セッションの作成に失敗しました"})
 		return
 	}
 
@@ -107,13 +108,14 @@ func (h *Handler) createSession(c *gin.Context) {
 
 // participantResp: GET /api/sessions/:id/state のレスポンスに含める参加者の公開情報。
 type participantResp struct {
-	ID            string                 `json:"id"`
-	Role          session.Role           `json:"role"`
-	DisplayName   string                 `json:"displayName"`
-	AvatarIcon    string                 `json:"avatarIcon"`
-	TransportMode session.TransportMode  `json:"transportMode"`
-	Live          *session.LocationState `json:"live"`
-	ETASeconds    *int                   `json:"etaSeconds"`
+	ID              string                 `json:"id"`
+	Role            session.Role           `json:"role"`
+	DisplayName     string                 `json:"displayName"`
+	AvatarIcon      string                 `json:"avatarIcon"`
+	TransportMode   session.TransportMode  `json:"transportMode"`
+	Live            *session.LocationState `json:"live"`
+	ETASeconds      *int                   `json:"etaSeconds"`
+	LocationSharing bool                   `json:"locationSharing"`
 }
 
 // destinationResp: GET /api/sessions/:id/state のレスポンスに含める目的地情報。
@@ -180,13 +182,14 @@ func (h *Handler) getState(c *gin.Context) {
 	participants := make([]participantResp, 0, len(all))
 	for _, p := range all {
 		participants = append(participants, participantResp{
-			ID:            p.ID,
-			Role:          p.Role,
-			DisplayName:   p.DisplayName,
-			AvatarIcon:    p.AvatarIcon,
-			TransportMode: p.TransportMode,
-			Live:          p.Live,
-			ETASeconds:    p.ETASeconds,
+			ID:              p.ID,
+			Role:            p.Role,
+			DisplayName:     p.DisplayName,
+			AvatarIcon:      p.AvatarIcon,
+			TransportMode:   p.TransportMode,
+			Live:            p.Live,
+			ETASeconds:      p.ETASeconds,
+			LocationSharing: p.LocationSharing,
 		})
 	}
 
@@ -217,17 +220,45 @@ func (h *Handler) endSession(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// regenerateLinkResp: POST /api/sessions/:id/regenerate-link のレスポンス。
+type regenerateLinkResp struct {
+	TokenHost string    `json:"tokenHost"`
+	ShareURL  string    `json:"shareUrl"`
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+// regenerateLink は POST /api/sessions/:id/regenerate-link を実装する。
+// ホスト/ゲスト双方のトークンを新しい値へ差し替え、以後古いトークンでの
+// 新規参加・再接続を拒否させる（トークン漏えいが疑われる場合の安全弁、新設）。
+// ホストのトークンのみ受理する（仕様書§5.6のendSessionと同じ認可パターン）。
+func (h *Handler) regenerateLink(c *gin.Context) {
+	id := c.Param("id")
+	token := c.Query("token")
+
+	rec, err := h.hub.RegenerateTokens(c.Request.Context(), id, token)
+	if err != nil {
+		respondSessionErr(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, regenerateLinkResp{
+		TokenHost: rec.TokenHost,
+		ShareURL:  h.publicBaseURL + "/?s=" + rec.ID + "&t=" + rec.TokenGuest,
+		ExpiresAt: rec.ExpiresAt,
+	})
+}
+
 // respondSessionErr は session パッケージのエラーを適切な HTTP ステータスに変換する。
 func respondSessionErr(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, session.ErrNotFound):
-		c.JSON(http.StatusNotFound, gin.H{"error": "session not found or expired"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "セッションが見つからないか、既に終了しています"})
 	case errors.Is(err, session.ErrForbidden):
-		c.JSON(http.StatusForbidden, gin.H{"error": "not allowed for this role"})
+		c.JSON(http.StatusForbidden, gin.H{"error": "この操作を行う権限がありません"})
 	case errors.Is(err, session.ErrParticipantLimit):
-		c.JSON(http.StatusForbidden, gin.H{"error": "session is full"})
+		c.JSON(http.StatusForbidden, gin.H{"error": "参加人数が上限に達しています"})
 	default:
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "サーバー内部でエラーが発生しました"})
 	}
 }
 
@@ -260,11 +291,11 @@ type etaTransitResp struct {
 func (h *Handler) etaTransit(c *gin.Context) {
 	var req etaTransitReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON body"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "リクエストの形式が正しくありません"})
 		return
 	}
 	if !validLatLng(req.FromLat, req.FromLng) || !validLatLng(req.ToLat, req.ToLng) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "fromLat/fromLng/toLat/toLng must be valid coordinates"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "出発地・目的地の座標を正しく指定してください"})
 		return
 	}
 
@@ -273,16 +304,16 @@ func (h *Handler) etaTransit(c *gin.Context) {
 		transitroute.LatLng{Lat: req.ToLat, Lng: req.ToLng},
 	)
 	if errors.Is(err, transitroute.ErrNoRoute) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "no transit route found"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "電車の経路が見つかりませんでした"})
 		return
 	}
 	if errors.Is(err, transitroute.ErrNoProviderAvailable) {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "transit ETA is not configured"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "電車の所要時間の算出が現在利用できません"})
 		return
 	}
 	if err != nil {
 		h.log.Error("compute transit route failed", "err", err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to compute transit route"})
+		c.JSON(http.StatusBadGateway, gin.H{"error": "電車の経路の算出に失敗しました"})
 		return
 	}
 

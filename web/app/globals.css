@@ -1,3 +1,11 @@
+@import "tailwindcss";
+@import "@heroui/styles";
+
+/* HeroUIのテーマ変数を、cocode既存のブランドトークンで上書きする(層無し
+   ルールはHeroUIの@layer themeより常に優先されるため、@layerで包む必要はない)。
+   --accent はHeroUIの主要アクションカラー(ボタン・フォーカスリング等)、
+   --accent-a/-bはこのアプリ独自の「参加者マーカーの色分け」用トークンで、
+   HeroUIには対応する概念が無いため引き続きこのファイルで管理する。 */
 :root {
   --bg: #f4f6fb;
   --fg: #101828;
@@ -22,26 +30,33 @@
   --brand-to: #10b981;
   --brand-gradient: linear-gradient(135deg, var(--brand-from), var(--brand-to));
   color-scheme: light;
+
+  --accent: var(--accent-a);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0a0e17;
-    --fg: #f3f4f6;
-    --fg-muted: #9aa4b8;
-    --surface: #141926;
-    --surface-2: #1c2333;
-    --surface-border: rgba(255, 255, 255, 0.08);
-    --accent-a: #60a5fa;
-    --accent-a-soft: rgba(96, 165, 250, 0.25);
-    --accent-b: #fbbf24;
-    --accent-b-soft: rgba(251, 191, 36, 0.25);
-    --accent-neutral: #e5e7eb;
-    --shadow-soft: 0 12px 40px rgba(0, 0, 0, 0.5);
-    --brand-from: #60a5fa;
-    --brand-to: #34d399;
-    color-scheme: dark;
-  }
+/* HeroUIのダークモードは.dark/[data-theme="dark"]クラスで切り替わる
+   (OS設定への自動追従はapp/layout.tsxのbeforeInteractiveスクリプトが担う)。
+   以前はここを@media (prefers-color-scheme: dark)にしていたが、HeroUIの
+   トークンと切り替えの仕組みを揃えるためクラスベースに統一した。 */
+.dark,
+[data-theme="dark"] {
+  --bg: #0a0e17;
+  --fg: #f3f4f6;
+  --fg-muted: #9aa4b8;
+  --surface: #141926;
+  --surface-2: #1c2333;
+  --surface-border: rgba(255, 255, 255, 0.08);
+  --accent-a: #60a5fa;
+  --accent-a-soft: rgba(96, 165, 250, 0.25);
+  --accent-b: #fbbf24;
+  --accent-b-soft: rgba(251, 191, 36, 0.25);
+  --accent-neutral: #e5e7eb;
+  --shadow-soft: 0 12px 40px rgba(0, 0, 0, 0.5);
+  --brand-from: #60a5fa;
+  --brand-to: #34d399;
+  color-scheme: dark;
+
+  --accent: var(--accent-a);
 }
 
 * {
@@ -86,33 +101,6 @@ button {
   overflow: hidden;
 }
 
-.cocode-center-shell {
-  min-height: 100dvh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-}
-
-/* ---------- glassmorphism surfaces ---------- */
-
-.cocode-glass {
-  background: var(--surface);
-  border: 1px solid var(--surface-border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-soft);
-}
-
-/* ---------- create form ---------- */
-
-.cocode-form-card {
-  width: min(420px, 100%);
-  padding: 32px 28px;
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-}
-
 .cocode-brand {
   display: flex;
   align-items: center;
@@ -120,107 +108,6 @@ button {
   font-weight: 700;
   font-size: 22px;
   letter-spacing: -0.02em;
-}
-
-.cocode-picking-card {
-  width: min(340px, 100%);
-  padding: 16px 18px;
-  gap: 12px;
-}
-
-.cocode-brand-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 999px;
-  background: linear-gradient(135deg, var(--accent-a), var(--accent-b));
-}
-
-.cocode-subtitle {
-  color: var(--fg-muted);
-  font-size: 14px;
-  line-height: 1.6;
-  margin: 0;
-}
-
-.cocode-btn {
-  appearance: none;
-  border: none;
-  border-radius: 999px;
-  padding: 13px 20px;
-  font-size: 15px;
-  font-weight: 600;
-  cursor: pointer;
-  transition:
-    transform 0.15s ease,
-    box-shadow 0.15s ease,
-    opacity 0.15s ease;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-}
-
-.cocode-btn:active {
-  transform: scale(0.98);
-}
-
-.cocode-btn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-  transform: none;
-}
-
-.cocode-btn-primary {
-  background: linear-gradient(135deg, var(--accent-a), #2563eb);
-  color: white;
-  box-shadow: 0 6px 18px var(--accent-a-soft);
-}
-
-.cocode-btn-secondary {
-  background: transparent;
-  color: var(--fg);
-  border: 1px solid var(--surface-border);
-}
-
-.cocode-btn-danger {
-  background: var(--danger);
-  color: white;
-}
-
-.cocode-hint {
-  font-size: 12.5px;
-  color: var(--fg-muted);
-  line-height: 1.6;
-}
-
-.cocode-error {
-  font-size: 13px;
-  color: var(--danger);
-  margin: 0;
-}
-
-.cocode-divider {
-  height: 1px;
-  background: var(--surface-border);
-  border: none;
-  margin: 2px 0;
-}
-
-.cocode-share-box {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px;
-  border-radius: var(--radius-md);
-}
-
-.cocode-share-url {
-  font-size: 12.5px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: var(--fg-muted);
 }
 
 /* ---------- map ---------- */
@@ -234,6 +121,14 @@ button {
   cursor: crosshair;
 }
 
+/* ライブマップ画面(LiveSession.tsx)の画面下部固定フッター(仕様書§14.9、
+   高さ約68px)と、MapLibre標準の+/-ズームボタンが重なって押しづらい問題の
+   対応(2026-09-02新設・p7残課題)。フッターを持つ画面(hasFooterOverlay)
+   でのみ、ズームボタンをフッター分+余白ぶん上へずらす。 */
+.cocode-map-with-footer .maplibregl-ctrl-bottom-right {
+  bottom: 84px;
+}
+
 .cocode-marker {
   display: flex;
   align-items: center;
@@ -241,11 +136,13 @@ button {
 }
 
 .cocode-marker-target {
-  font-size: 30px;
+  color: #ef4444; /* 目的地ピンの色(2026-09-02改訂: 絵文字からSVGアイコンへ変更) */
   filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.35));
 }
 
 /* ---------- ライブ位置マーカー(アバターバブル+ネームタグ、2026-08-31改訂) ---------- */
+/* maplibreがReact外のDOMとして直接マウントするため、HeroUI移行後も
+   このカスタムCSSで組み立てる(components/MapView.tsx参照)。 */
 
 .cocode-marker-live-wrap {
   display: flex;
@@ -305,8 +202,7 @@ button {
   border-radius: 999px;
   background: #22c55e;
   border: 2px solid white;
-  font-size: 10px;
-  line-height: 1;
+  color: white; /* 内側のチェックマークSVG(stroke=currentColor)用、2026-09-02改訂 */
   display: flex;
   align-items: center;
   justify-content: center;
@@ -343,7 +239,9 @@ button {
   }
 }
 
-/* ---------- overlay UI on top of the map ---------- */
+/* ---------- 地図オーバーレイの配置(2026-08-31新設) ----------
+   地図の上に浮かせるカード類(LandingGuestの経路確認カード、
+   DestinationPickerPanelの一部)の共通配置枠。 */
 
 .cocode-topbar {
   position: absolute;
@@ -363,571 +261,11 @@ button {
   pointer-events: auto;
 }
 
-.cocode-status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  flex-shrink: 0;
-}
-
-.cocode-status-dot-online {
-  background: #22c55e;
-  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.25);
-}
-
-.cocode-status-dot-offline {
-  background: #9ca3af;
-}
-
-.cocode-countdown-warn {
-  color: var(--warn);
-}
-
-.cocode-countdown-danger {
-  color: var(--danger);
-}
-
-/* ---------- 位置情報共有画面のヘッダー/フッター(2026-08-31改訂)----------
-   地図をメインに大きく見せるため、フローティングカードではなく細い
-   全幅バーにした。ホスト・ゲスト共通の構成(左:ブランド名/中央:残り時間/
-   右:参加人数、フッターはリンク共有・メンバー・現在地・全員を収める)。 */
-
-.cocode-map-header {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 52px;
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: center;
-  padding: 0 16px;
-  background: color-mix(in srgb, var(--surface) 88%, transparent);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
-  border-bottom: 1px solid var(--surface-border);
-  z-index: 10;
-}
-
-.cocode-map-header-brand {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-weight: 800;
-  font-size: 16px;
-  letter-spacing: -0.01em;
-  justify-self: start;
-}
-
-.cocode-map-header-logo {
-  height: 22px;
-  width: 22px;
-  flex-shrink: 0;
-}
-
-.cocode-map-header-countdown {
-  font-variant-numeric: tabular-nums;
-  font-weight: 700;
-  font-size: 14px;
-  white-space: nowrap;
-  transition: color 0.2s ease;
-}
-
-.cocode-map-header-count {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12.5px;
-  color: var(--fg-muted);
-  justify-self: end;
-  white-space: nowrap;
-}
-
-.cocode-map-footer {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 68px;
-  display: flex;
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  scroll-snap-type: x proximity;
-  background: color-mix(in srgb, var(--surface) 88%, transparent);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
-  border-top: 1px solid var(--surface-border);
-  z-index: 10;
-}
-
-/* ちょうど4つぶんが画面内に収まる幅にし、5つ目以降は横スクロールで
-   到達できるようにする(2026-08-31改訂、ボタン数が増えてもフッターが
-   窮屈にならないようにするため)。 */
-.cocode-map-footer-btn {
-  appearance: none;
-  border: none;
-  background: none;
-  flex: 0 0 25%;
-  scroll-snap-align: start;
-  color: var(--fg);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.cocode-map-footer-btn span:first-child {
-  font-size: 19px;
-}
-
-.cocode-map-footer-btn span:last-child {
-  white-space: nowrap;
-}
-
-.cocode-map-footer-btn:active {
-  opacity: 0.7;
-}
-
-.cocode-map-footer-btn-danger {
-  color: #fca5a5;
-}
-
-/* ---------- メンバー一覧(右サイドバー、2026-08-31新設) ---------- */
-
-.cocode-sidebar-right {
-  left: auto;
-  right: 0;
-  border-right: none;
-  border-left: 1px solid var(--surface-border);
-}
-
-.cocode-member-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  overflow-y: auto;
-}
-
-.cocode-member-row {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px;
-  border-radius: var(--radius-sm);
-  border-bottom: 1px solid var(--surface-border);
-}
-
-.cocode-member-row:last-child {
-  border-bottom: none;
-}
-
-/* ---------- チャット(左サイドバー、アクティビティログ+スタンプ送信統合、2026-08-31新設) ---------- */
-
-.cocode-chat-list {
-  flex: 1;
-  overflow-y: auto;
-  min-height: 0;
-}
-
-.cocode-chat-compose {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding-top: 12px;
-  border-top: 1px solid var(--surface-border);
-  flex-shrink: 0;
-}
-
-/* ---------- アクティビティログ(参加/退出/到着/ひとことメッセージ、2026-08-31新設) ---------- */
-
-.cocode-activity-log {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.cocode-activity-row {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 6px 4px;
-  font-size: 12px;
-}
-
-.cocode-activity-icon {
-  flex-shrink: 0;
-}
-
-.cocode-activity-text {
-  flex: 1;
-  min-width: 0;
-  color: var(--fg-muted);
-  overflow-wrap: break-word;
-}
-
-.cocode-activity-time {
-  flex-shrink: 0;
-  color: var(--fg-muted);
-  font-size: 11px;
-}
-
-.cocode-member-row-top {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.cocode-member-row-bottom {
-  padding-left: 42px;
-}
-
-.cocode-member-avatar {
-  width: 36px;
-  height: 36px;
-  border-radius: 999px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.cocode-member-avatar img {
-  width: 78%;
-  height: 78%;
-  object-fit: contain;
-  image-rendering: pixelated;
-}
-
-.cocode-tone-a-solid {
-  background: var(--accent-a);
-}
-
-.cocode-tone-b-solid {
-  background: var(--accent-b);
-}
-
-.cocode-member-name {
-  font-size: 14px;
-  flex: 1;
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  min-width: 0;
-}
-
-.cocode-member-self-tag {
-  font-size: 11px;
-  color: var(--fg-muted);
-}
-
-.cocode-member-arrived-tag {
-  font-size: 11px;
-  font-weight: 600;
-  color: #22c55e;
-  margin-left: 4px;
-}
-
-/* ---------- 目的地変更パネル(ホスト限定、2026-08-31新設・改訂) ----------
-   目的地の新規設定・変更は共通のDestinationPickerPanel(.cocode-topbar)を
-   使う。ライブマップ(LiveSession)では上部52pxの.cocode-map-headerと
-   重なってしまうため、そのぶん下にずらす専用クラス。 */
-
+/* 目的地変更パネル(ホスト限定、2026-08-31新設・改訂)専用。ライブマップ
+   (LiveSession)ではHeroUI化した上部ヘッダー(高さ52px)と重なってしまうため、
+   そのぶん下にずらす。 */
 .cocode-topbar-below-header {
   top: 68px;
-}
-
-/* ---------- トースト通知(2026-08-31新設) ---------- */
-
-.cocode-toast {
-  position: absolute;
-  top: 64px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 20;
-  background: color-mix(in srgb, var(--surface) 92%, transparent);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
-  border: 1px solid var(--surface-border);
-  color: var(--fg);
-  padding: 10px 18px;
-  border-radius: 999px;
-  font-size: 13px;
-  box-shadow: var(--shadow-soft);
-  animation: cocode-toast-in 0.2s ease;
-  white-space: nowrap;
-}
-
-@keyframes cocode-toast-in {
-  from {
-    opacity: 0;
-    transform: translate(-50%, -8px);
-  }
-}
-
-/* ---------- 位置情報拒否時の恒常バナー(仕様書§19、2026-08-31実装) ---------- */
-/* トースト(.cocode-toast)と違い自動で消えず、ヘッダー直下に幅いっぱいで
-   表示し続ける。 */
-
-.cocode-geo-banner {
-  position: absolute;
-  top: 52px;
-  left: 0;
-  right: 0;
-  z-index: 20;
-  background: color-mix(in srgb, var(--warn) 20%, var(--surface));
-  border-bottom: 1px solid var(--warn);
-  color: var(--fg);
-  padding: 8px 14px;
-  font-size: 12.5px;
-  line-height: 1.5;
-  text-align: center;
-}
-
-/* ---------- 移動手段選択モーダル(2026-08-31新設) ---------- */
-
-/* ---------- アイコン選択(横スクロール、2026-08-31新設) ---------- */
-
-.cocode-avatar-picker {
-  display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  padding: 2px;
-  scroll-snap-type: x proximity;
-}
-
-.cocode-avatar-picker-item {
-  appearance: none;
-  flex: 0 0 auto;
-  width: 52px;
-  height: 52px;
-  border-radius: var(--radius-sm);
-  border: 2px solid transparent;
-  background: var(--bg);
-  padding: 6px;
-  cursor: pointer;
-  scroll-snap-align: start;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.cocode-avatar-picker-item img {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  image-rendering: pixelated;
-}
-
-.cocode-avatar-picker-item-active {
-  border-color: var(--accent-a);
-  background: var(--accent-a-soft);
-}
-
-.cocode-transport-options {
-  display: flex;
-  gap: 10px;
-  width: 100%;
-}
-
-.cocode-transport-option {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  padding: 14px 8px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--surface-border);
-  background: var(--bg);
-  color: var(--fg);
-  font-size: 12.5px;
-  cursor: pointer;
-}
-
-.cocode-transport-option-icon {
-  font-size: 22px;
-}
-
-.cocode-transport-option-eta {
-  font-size: 11px;
-  color: var(--fg-muted);
-}
-
-.cocode-transport-option-active {
-  border-color: var(--accent-a);
-  background: var(--accent-a-soft);
-}
-
-.cocode-transport-option:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-/* ---------- メンバー一覧の移動手段表示(2026-08-31新設) ---------- */
-
-.cocode-member-transport {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 13px;
-  flex-shrink: 0;
-}
-
-.cocode-member-transport-btn {
-  appearance: none;
-  border: 1px solid var(--surface-border);
-  background: var(--surface-2);
-  border-radius: 999px;
-  padding: 4px 10px;
-  cursor: pointer;
-  color: var(--fg);
-}
-
-.cocode-member-eta {
-  color: var(--fg-muted);
-  font-size: 11.5px;
-}
-
-/* ---------- modal ---------- */
-
-.cocode-modal-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(9, 12, 20, 0.55);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 50;
-  padding: 20px;
-}
-
-.cocode-modal {
-  width: min(380px, 100%);
-  padding: 28px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  text-align: center;
-}
-
-.cocode-modal-icon {
-  font-size: 34px;
-}
-
-.cocode-modal-title {
-  font-size: 18px;
-  font-weight: 700;
-  margin: 0;
-}
-
-.cocode-modal-body {
-  font-size: 14px;
-  color: var(--fg-muted);
-  margin: 0;
-  line-height: 1.6;
-}
-
-.cocode-attribution-note {
-  font-size: 11px;
-  color: var(--fg-muted);
-  text-align: center;
-  margin-top: -4px;
-}
-
-/* ---------- form inputs (CreateForm / LandingGuest 共通) ---------- */
-
-.cocode-text-input {
-  appearance: none;
-  border: 1px solid var(--surface-border);
-  border-radius: var(--radius-md);
-  padding: 10px 12px;
-  font-size: 14px;
-  font-family: inherit;
-  background: var(--bg);
-  color: var(--fg);
-  width: 100%;
-}
-
-.cocode-address-results {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  max-height: 160px;
-  overflow-y: auto;
-}
-
-.cocode-address-result-btn {
-  appearance: none;
-  border: 1px solid var(--surface-border);
-  border-radius: var(--radius-md);
-  background: var(--bg);
-  color: var(--fg);
-  padding: 8px 10px;
-  font-size: 13px;
-  text-align: left;
-  width: 100%;
-  cursor: pointer;
-}
-
-.cocode-address-result-btn:hover {
-  border-color: var(--accent-a);
-}
-
-/* ---------- スタンプ送信モーダル(仕様書§12.1-④⑤、2026-08-31実装) ---------- */
-
-.cocode-stamp-presets {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: center;
-}
-
-.cocode-stamp-preset-btn {
-  appearance: none;
-  border: 1px solid var(--surface-border);
-  border-radius: 999px;
-  background: var(--bg);
-  color: var(--fg);
-  padding: 8px 14px;
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.cocode-stamp-preset-btn:hover {
-  border-color: var(--accent-a);
-}
-
-.cocode-stamp-custom-row {
-  display: flex;
-  flex-wrap: nowrap;
-  align-items: center;
-  gap: 8px;
-}
-
-.cocode-stamp-custom-row .cocode-text-input {
-  flex: 1;
-  min-width: 0;
-  width: auto;
-}
-
-.cocode-stamp-custom-row .cocode-btn {
-  flex-shrink: 0;
-  width: auto;
-}
-
-/* ---------- フィードバックフォーム(仕様書§17.1、2026-08-31実装) ---------- */
-
-.cocode-feedback-textarea {
-  resize: vertical;
-  min-height: 96px;
-  font-family: inherit;
-  text-align: left;
 }
 
 /* ---------- landing pages (ホスト用§14.0 / ゲスト用§14.2) ---------- */
@@ -995,7 +333,8 @@ button {
 /* 2026-08-31ブラッシュアップ: 構図・配色(ガラスモーフィズム+ブランドグラデーション+
    フォンモックアップ)は維持したまま、静→動の演出を追加した。全アニメーションは
    prefers-reduced-motion: no-preference の場合のみ有効にし、それ以外の環境では
-   従来通りの静止した見た目にフォールバックする。 */
+   従来通りの静止した見た目にフォールバックする。2026-09-02改訂: 周囲の並木の
+   絵文字装飾(旧🌳)は撤去し、フォン自体の演出のみ残した。 */
 
 .cocode-phone-mockup {
   position: relative;
@@ -1021,22 +360,6 @@ button {
   filter: blur(28px);
   pointer-events: none;
   z-index: 0;
-}
-
-.cocode-phone-deco {
-  position: relative;
-  z-index: 1;
-  font-size: clamp(20px, 5vw, 30px);
-  opacity: 0.55;
-  filter: saturate(0.8);
-}
-
-.cocode-phone-deco-1 {
-  transform: rotate(-8deg);
-}
-
-.cocode-phone-deco-2 {
-  transform: rotate(10deg) scaleX(-1);
 }
 
 .cocode-phone-frame {
@@ -1112,14 +435,6 @@ button {
     animation: cocode-phone-glow-pulse 4.5s ease-in-out infinite;
   }
 
-  .cocode-phone-deco-1 {
-    animation: cocode-phone-sway-1 5s ease-in-out infinite;
-  }
-
-  .cocode-phone-deco-2 {
-    animation: cocode-phone-sway-2 5.6s ease-in-out infinite;
-  }
-
   .cocode-phone-frame {
     animation: cocode-phone-float 4s ease-in-out infinite;
   }
@@ -1143,26 +458,6 @@ button {
   50% {
     opacity: 0.3;
     transform: translate(-50%, -50%) scale(1.06);
-  }
-}
-
-@keyframes cocode-phone-sway-1 {
-  0%,
-  100% {
-    transform: rotate(-8deg);
-  }
-  50% {
-    transform: rotate(-14deg);
-  }
-}
-
-@keyframes cocode-phone-sway-2 {
-  0%,
-  100% {
-    transform: rotate(10deg) scaleX(-1);
-  }
-  50% {
-    transform: rotate(4deg) scaleX(-1);
   }
 }
 
@@ -1258,44 +553,6 @@ button {
   border: 1px dashed var(--surface-border);
 }
 
-.cocode-landing-info-links {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  align-items: center;
-  gap: 4px 12px;
-}
-
-.cocode-landing-info-link {
-  appearance: none;
-  border: none;
-  background: none;
-  color: var(--fg-muted);
-  font-size: 12.5px;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  cursor: pointer;
-  padding: 6px 2px;
-}
-
-.cocode-landing-info-link:hover {
-  color: var(--fg);
-}
-
-.cocode-modal-scroll {
-  max-height: 80dvh;
-  overflow-y: auto;
-  text-align: left;
-}
-
-.cocode-modal-scroll .cocode-modal-title {
-  text-align: center;
-}
-
-.cocode-modal-steps {
-  width: 100%;
-}
-
 .cocode-landing-steps-list {
   list-style: none;
   margin: 0;
@@ -1328,155 +585,6 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
-}
-
-.cocode-invite-card {
-  width: 100%;
-  padding: 16px 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  text-align: left;
-}
-
-.cocode-invite-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 12px;
-  font-size: 14px;
-}
-
-.cocode-trust-notice {
-  font-size: 13px;
-  color: var(--warn);
-  background: rgba(217, 119, 6, 0.1);
-  border: 1px solid rgba(217, 119, 6, 0.3);
-  border-radius: var(--radius-md);
-  padding: 12px 14px;
-  line-height: 1.6;
-  margin: 0;
-  text-align: left;
-}
-
-/* ---------- サイドバー(ハンバーガーメニュー、2026-08-31新設) ---------- */
-
-.cocode-sidebar-trigger {
-  appearance: none;
-  border: 1px solid var(--surface-border);
-  background: var(--surface);
-  color: var(--fg);
-  width: 40px;
-  height: 40px;
-  border-radius: var(--radius-sm);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  margin-left: auto;
-  flex-shrink: 0;
-}
-
-.cocode-sidebar-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(4, 6, 12, 0.6);
-  -webkit-backdrop-filter: blur(2px);
-  backdrop-filter: blur(2px);
-  z-index: 60;
-  animation: cocode-fade-in 0.15s ease;
-}
-
-.cocode-sidebar {
-  position: fixed;
-  top: 0;
-  left: 0;
-  bottom: 0;
-  width: min(300px, 84vw);
-  background: var(--surface);
-  border-right: 1px solid var(--surface-border);
-  box-shadow: var(--shadow-soft);
-  z-index: 61;
-  display: flex;
-  flex-direction: column;
-  padding: 18px 14px;
-  gap: 4px;
-  overflow-y: auto;
-  animation: cocode-slide-in 0.2s ease;
-}
-
-@keyframes cocode-fade-in {
-  from {
-    opacity: 0;
-  }
-}
-
-@keyframes cocode-slide-in {
-  from {
-    transform: translateX(-16px);
-    opacity: 0;
-  }
-}
-
-.cocode-sidebar-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 10px 16px;
-}
-
-.cocode-sidebar-close {
-  appearance: none;
-  border: none;
-  background: none;
-  color: var(--fg-muted);
-  font-size: 20px;
-  line-height: 1;
-  cursor: pointer;
-  margin-left: auto;
-  padding: 4px;
-}
-
-.cocode-sidebar-item {
-  appearance: none;
-  border: none;
-  background: none;
-  color: var(--fg);
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  padding: 12px 10px;
-  border-radius: var(--radius-sm);
-  font-size: 14.5px;
-  text-align: left;
-  cursor: pointer;
-  text-decoration: none;
-}
-
-.cocode-sidebar-item:hover {
-  background: var(--surface-2);
-}
-
-.cocode-sidebar-item-icon {
-  width: 22px;
-  text-align: center;
-  flex-shrink: 0;
-  font-size: 16px;
-}
-
-.cocode-sidebar-item-external {
-  margin-left: auto;
-  color: var(--fg-muted);
-  font-size: 12px;
-  flex-shrink: 0;
-}
-
-.cocode-sidebar-divider {
-  height: 1px;
-  background: var(--surface-border);
-  margin: 8px 4px;
-  border: none;
 }
 
 /* ---------- 静的コンテンツページ(よくある質問・プライバシーポリシー・利用規約) ---------- */
@@ -1565,12 +673,43 @@ button {
   color: var(--accent-a);
 }
 
-/* ---------- responsive ---------- */
+/* ---------- アイコン選択(横スクロール、2026-08-31新設) ----------
+   AvatarPickerのみ、HeroUI化(2026-09-02)を一度試したがスクロールで
+   全アイコンへ到達できないとの報告があり、素のbuttonによるこの実装へ
+   差し戻したため、このCSSも合わせて復元している。 */
 
-@media (max-width: 480px) {
-  .cocode-sharing-status {
-    font-size: 11.5px;
-    padding: 7px 12px;
-    text-align: center;
-  }
+.cocode-avatar-picker {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 2px;
+  scroll-snap-type: x proximity;
+}
+
+.cocode-avatar-picker-item {
+  appearance: none;
+  flex: 0 0 auto;
+  width: 52px;
+  height: 52px;
+  border-radius: var(--radius-sm);
+  border: 2px solid transparent;
+  background: var(--bg);
+  padding: 6px;
+  cursor: pointer;
+  scroll-snap-align: start;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cocode-avatar-picker-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+.cocode-avatar-picker-item-active {
+  border-color: var(--accent-a);
+  background: var(--accent-a-soft);
 }

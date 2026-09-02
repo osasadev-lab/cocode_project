@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { Button, Card } from "@heroui/react";
+import { DoorOpen, MessageCircle } from "lucide-react";
 import { AdSlot } from "./AdSlot";
 import { FeedbackModal } from "./FeedbackModal";
 
@@ -17,19 +19,22 @@ export function GuestLeftScreen({ onBackToTop }: GuestLeftScreenProps) {
   const [feedbackOpen, setFeedbackOpen] = useState(false);
 
   return (
-    <div className="cocode-center-shell">
-      <div className="cocode-glass cocode-modal">
-        <div className="cocode-modal-icon">🚪</div>
-        <p className="cocode-modal-title">退出しました</p>
-        <p className="cocode-modal-body">位置共有から退出しました。他の参加者の共有はそのまま継続されています。</p>
-        <button className="cocode-btn cocode-btn-primary" onClick={onBackToTop}>
-          トップ画面に戻る
-        </button>
-        <button className="cocode-btn cocode-btn-secondary" onClick={() => setFeedbackOpen(true)}>
-          💬 フィードバックを送る
-        </button>
-        <AdSlot />
-      </div>
+    <div className="flex min-h-dvh items-center justify-center p-6">
+      <Card className="w-full max-w-sm">
+        <Card.Content className="flex flex-col items-center gap-3 py-8 text-center">
+          <DoorOpen className="size-9 text-muted" aria-hidden />
+          <Card.Title>退出しました</Card.Title>
+          <Card.Description>位置共有から退出しました。他の参加者の共有はそのまま継続されています。</Card.Description>
+          <Button variant="primary" fullWidth onPress={onBackToTop}>
+            トップ画面に戻る
+          </Button>
+          <Button variant="outline" fullWidth onPress={() => setFeedbackOpen(true)}>
+            <MessageCircle className="size-4" aria-hidden />
+            フィードバックを送る
+          </Button>
+          <AdSlot />
+        </Card.Content>
+      </Card>
 
       {feedbackOpen && <FeedbackModal onClose={() => setFeedbackOpen(false)} />}
     </div>

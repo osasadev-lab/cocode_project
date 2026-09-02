@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { Button, Input, Label, Modal, TextArea, TextField } from "@heroui/react";
+import { HeartHandshake } from "lucide-react";
 import { ApiError, submitFeedback } from "@/lib/api";
 
 interface FeedbackModalProps {
@@ -44,53 +46,53 @@ export function FeedbackModal({ onClose }: FeedbackModalProps) {
   }
 
   return (
-    <div className="cocode-modal-backdrop" onClick={onClose}>
-      <div className="cocode-glass cocode-modal" onClick={(e) => e.stopPropagation()}>
-        {sent ? (
-          <>
-            <div className="cocode-modal-icon">🙏</div>
-            <p className="cocode-modal-title">送信しました</p>
-            <p className="cocode-modal-body">ご意見ありがとうございます。今後のcocode改善の参考にさせていただきます。</p>
-            <button className="cocode-btn cocode-btn-primary" onClick={onClose}>
-              閉じる
-            </button>
-          </>
-        ) : (
-          <>
-            <p className="cocode-modal-title">フィードバックを送る</p>
-            <p className="cocode-modal-body">不具合報告・ご要望など、お気軽にお送りください。</p>
-            <label className="cocode-hint" htmlFor="cocode-feedback-message">
-              内容({message.length}/{MAX_MESSAGE_LENGTH})
-            </label>
-            <textarea
-              id="cocode-feedback-message"
-              value={message}
-              onChange={(e) => setMessage(e.target.value.slice(0, MAX_MESSAGE_LENGTH))}
-              placeholder="例: 目的地変更後に地図が更新されないことがあります"
-              className="cocode-text-input cocode-feedback-textarea"
-              rows={5}
-            />
-            <label className="cocode-hint" htmlFor="cocode-feedback-replyto">
-              返信先(任意)
-            </label>
-            <input
-              id="cocode-feedback-replyto"
-              type="text"
-              value={replyTo}
-              onChange={(e) => setReplyTo(e.target.value)}
-              placeholder="返信が欲しい場合は連絡先を入力"
-              className="cocode-text-input"
-            />
-            {error && <p className="cocode-error">{error}</p>}
-            <button className="cocode-btn cocode-btn-primary" onClick={send} disabled={sending}>
-              {sending ? "送信中…" : "送信する"}
-            </button>
-            <button className="cocode-btn cocode-btn-secondary" onClick={onClose} disabled={sending}>
-              閉じる
-            </button>
-          </>
-        )}
-      </div>
-    </div>
+    <Modal isOpen onOpenChange={(open) => !open && onClose()}>
+      <Modal.Backdrop>
+        <Modal.Container>
+          <Modal.Dialog className="flex flex-col gap-3 text-center">
+            {sent ? (
+              <>
+                <Modal.Icon>
+                  <HeartHandshake className="size-8 text-accent" aria-hidden />
+                </Modal.Icon>
+                <Modal.Heading>送信しました</Modal.Heading>
+                <Modal.Body>ご意見ありがとうございます。今後のcocode改善の参考にさせていただきます。</Modal.Body>
+                <Modal.Footer>
+                  <Button variant="primary" fullWidth onPress={onClose}>
+                    閉じる
+                  </Button>
+                </Modal.Footer>
+              </>
+            ) : (
+              <>
+                <Modal.Heading>フィードバックを送る</Modal.Heading>
+                <Modal.Body className="flex flex-col gap-3 text-left">
+                  <p className="text-sm text-muted">不具合報告・ご要望など、お気軽にお送りください。</p>
+                  <TextField value={message} onChange={(v) => setMessage(v.slice(0, MAX_MESSAGE_LENGTH))} isRequired>
+                    <Label>
+                      内容({message.length}/{MAX_MESSAGE_LENGTH})
+                    </Label>
+                    <TextArea rows={5} placeholder="例: 目的地変更後に地図が更新されないことがあります" />
+                  </TextField>
+                  <TextField value={replyTo} onChange={setReplyTo}>
+                    <Label>返信先(任意)</Label>
+                    <Input placeholder="返信が欲しい場合は連絡先を入力" />
+                  </TextField>
+                  {error && <p className="text-sm text-danger">{error}</p>}
+                </Modal.Body>
+                <Modal.Footer>
+                  <Button variant="primary" fullWidth onPress={send} isDisabled={sending}>
+                    {sending ? "送信中…" : "送信する"}
+                  </Button>
+                  <Button variant="outline" fullWidth onPress={onClose} isDisabled={sending}>
+                    閉じる
+                  </Button>
+                </Modal.Footer>
+              </>
+            )}
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
+    </Modal>
   );
 }

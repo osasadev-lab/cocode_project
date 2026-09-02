@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { Button, Card } from "@heroui/react";
+import { CircleStop } from "lucide-react";
 import { ApiError, endSession } from "@/lib/api";
 import { clearSession, type StoredSession } from "@/lib/storage";
 
@@ -59,62 +61,63 @@ export function ResumeSessionChoice({ stored, onResume, onStopped }: ResumeSessi
   if (confirming) {
     const next = confirming === "stopAndNew" ? "create" : "landing";
     return (
-      <div className="cocode-center-shell">
-        <div className="cocode-glass cocode-modal">
-          <div className="cocode-modal-icon">⏹</div>
-          <p className="cocode-modal-title">
-            {confirming === "stopAndNew" ? "共有を停止して、新しい共有を始めますか?" : "共有を停止しますか?"}
-          </p>
-          <p className="cocode-modal-body">
-            {isHost
-              ? "終了すると、参加者全員との位置共有がすぐに終わります。この操作は取り消せません。"
-              : "あなたはこの共有から退出します。他の参加者の共有はそのまま継続されます。"}
-          </p>
-          {error && <p className="cocode-error">{error}</p>}
-          <button className="cocode-btn cocode-btn-primary" onClick={() => doStop(next)} disabled={working}>
-            {working ? "処理中…" : confirming === "stopAndNew" ? "停止して新しく始める" : "停止する"}
-          </button>
-          <button
-            className="cocode-btn cocode-btn-secondary"
-            onClick={() => {
-              setConfirming(null);
-              setError(null);
-            }}
-            disabled={working}
-          >
-            キャンセル
-          </button>
-        </div>
+      <div className="flex min-h-dvh items-center justify-center p-6">
+        <Card className="w-full max-w-sm">
+          <Card.Content className="flex flex-col items-center gap-3 py-8 text-center">
+            <CircleStop className="size-9 text-muted" aria-hidden />
+            <Card.Title>{confirming === "stopAndNew" ? "共有を停止して、新しい共有を始めますか?" : "共有を停止しますか?"}</Card.Title>
+            <Card.Description>
+              {isHost
+                ? "終了すると、参加者全員との位置共有がすぐに終わります。この操作は取り消せません。"
+                : "あなたはこの共有から退出します。他の参加者の共有はそのまま継続されます。"}
+            </Card.Description>
+            {error && <p className="text-sm text-danger">{error}</p>}
+            <Button variant="primary" fullWidth onPress={() => doStop(next)} isDisabled={working}>
+              {working ? "処理中…" : confirming === "stopAndNew" ? "停止して新しく始める" : "停止する"}
+            </Button>
+            <Button
+              variant="outline"
+              fullWidth
+              onPress={() => {
+                setConfirming(null);
+                setError(null);
+              }}
+              isDisabled={working}
+            >
+              キャンセル
+            </Button>
+          </Card.Content>
+        </Card>
       </div>
     );
   }
 
   return (
-    <div className="cocode-center-shell">
-      <div className="cocode-glass cocode-form-card" style={{ width: "min(360px, 100%)" }}>
-        <div className="cocode-brand">
-          <span className="cocode-brand-dot" />
-          cocode
-        </div>
-        <p className="cocode-subtitle">
-          {isHost ? "現在、位置共有セッションを開始しています。" : "現在、位置共有セッションに参加しています。"}
-        </p>
+    <div className="flex min-h-dvh items-center justify-center p-6">
+      <Card className="w-full max-w-sm">
+        <Card.Content className="flex flex-col gap-3 py-8">
+          <div className="flex items-center gap-2 text-lg font-bold">
+            <span className="size-2.5 rounded-full bg-accent" aria-hidden />
+            cocode
+          </div>
+          <Card.Description>
+            {isHost ? "現在、位置共有セッションを開始しています。" : "現在、位置共有セッションに参加しています。"}
+          </Card.Description>
 
-        <button className="cocode-btn cocode-btn-primary" onClick={onResume}>
-          共有中の画面を表示する
-        </button>
-        <button className="cocode-btn cocode-btn-secondary" onClick={() => setConfirming("stopAndNew")}>
-          共有を停止して新しい共有を始める
-        </button>
-        <button className="cocode-btn cocode-btn-secondary" onClick={() => setConfirming("stop")}>
-          共有を停止する
-        </button>
-        {!isHost && (
-          <p className="cocode-hint">
-            「停止」はあなた自身の参加のみを終了します。他の参加者の共有には影響しません。
-          </p>
-        )}
-      </div>
+          <Button variant="primary" fullWidth onPress={onResume}>
+            共有中の画面を表示する
+          </Button>
+          <Button variant="outline" fullWidth onPress={() => setConfirming("stopAndNew")}>
+            共有を停止して新しい共有を始める
+          </Button>
+          <Button variant="outline" fullWidth onPress={() => setConfirming("stop")}>
+            共有を停止する
+          </Button>
+          {!isHost && (
+            <p className="text-xs text-muted">「停止」はあなた自身の参加のみを終了します。他の参加者の共有には影響しません。</p>
+          )}
+        </Card.Content>
+      </Card>
     </div>
   );
 }

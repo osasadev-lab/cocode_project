@@ -1,6 +1,8 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
+import { ChevronUp, LocateFixed, Map as MapIcon, Search } from "lucide-react";
+import { Button, Card, Input, Label } from "@heroui/react";
 import type { DestinationPicker } from "@/lib/useDestinationPicker";
 
 interface DestinationPickerPanelProps {
@@ -17,7 +19,7 @@ interface DestinationPickerPanelProps {
   /** picking画面(地点確定前)で、確定ボタンの直前に追加のフィールドを挿入する
    * (新規作成時の表示名・アイコン・移動手段入力など)。 */
   children?: ReactNode;
-  /** picking画面のオーバーレイ(.cocode-topbar)に追加するクラス名。
+  /** picking画面のオーバーレイに追加するクラス名。
    * LiveSession(ライブマップ)ではヘッダーバー(§14.9)の下にずらすために使う。 */
   overlayClassName?: string;
 }
@@ -36,27 +38,86 @@ export function DestinationPickerPanel({
   children,
   overlayClassName,
 }: DestinationPickerPanelProps) {
-  if (picker.step === "choose") {
+  // collapsed(2026-09-02新設): カードが地図・目的地ピンを覆い隠して見えなく
+  // なってしまう(特に画面の狭いスマートフォン)という指摘への対応。カード右上の
+  // シェブロンボタンで、内容を隠して地図を確認できる小さなピル状のボタンだけに
+  // 折りたためるようにする。ステップ(choose/picking)を切り替えても折りたたみ
+  // 状態はリセットしない(地図を確認したい理由はどちらのステップでも変わらない
+  // ため)。
+  const [collapsed, setCollapsed] = useState(false);
+
+  if (collapsed) {
     return (
-      <div className="cocode-modal-backdrop">
-        <div className="cocode-glass cocode-form-card">
-          {title && <p className="cocode-subtitle">{title}</p>}
+      // pointer-events-none(2026-09-02修正、PC画面でモーダル横に目的地ピンを
+      // 置けない不具合の対応): この折りたたみ状態では中身がボタン1個だけで
+      // 見た目上も小さいが、他のステップと同じ構造上の理由でコンテナ自体は
+      // 効果としては不要だが念のため統一しておく(下記choose/picking画面の
+      // 説明を参照)。
+      <div className={`pointer-events-none absolute top-4 left-4 z-10${overlayClassName ? ` ${overlayClassName}` : ""}`}>
+        {/* variant="outline"(縁取りのみ・背景透明)は、カードの中でなく地図に
+            直接重ねると背景・文字とも地図に溶け込んで読めなくなる。ヘッダー/
+            フッター(LiveSession.tsx)と同じ不透明なガラス調背景に統一する
+            (2026-09-02修正、ユーザーフィードバックにより他UIとの統一を優先し
+            当初のprimary(青塗り)から変更)。 */}
+        <Button
+          variant="ghost"
+          onPress={() => setCollapsed(false)}
+          className="pointer-events-auto gap-2 border border-border bg-surface/90 shadow-lg backdrop-blur-sm"
+        >
+          <MapIcon className="size-4" aria-hidden />
+          地図を確認中(タップで再表示)
+        </Button>
+      </div>
+    );
+  }
 
-          <button className="cocode-btn cocode-btn-secondary" onClick={picker.useCurrentLocation} disabled={picker.locating}>
-            {picker.locating ? "取得中…" : "📍 現在地を使う"}
-          </button>
-          <button className="cocode-btn cocode-btn-secondary" onClick={picker.chooseFromMap} disabled={picker.locating}>
-            🗺️ 地図から選択する
-          </button>
+  if (picker.step === "choose") {
+    // 2026-09-02修正: 以前は`fixed inset-0`の全画面バックドロップ(bg-black/55)で
+    // 包んでいたため、カードの外側(視覚上は素の地図)をタップしても何も
+    // 起きない「地図が反応しない範囲」が画面全体に広がってしまっていた。
+    // すぐ下のpicking画面(地図タップで地点確定)と同じ、上部に浮かせるだけの
+    // 非モーダルな配置に統一し、地図を常にタップ可能なままにする。
+    //
+    // pointer-events-none/auto(2026-09-02再修正、「PC画面でモーダル横に
+    // 目的地ピンを置けない」の対応): 上記の対応後も、このコンテナ自体は
+    // `left-4 right-4`で画面幅いっぱいに広がったままだった。カード
+    // (max-w-105)は画面の左側に寄って表示されるため、スマホ幅では
+    // ほぼ全体を覆い問題が目立たなかったが、PCのような広い画面では
+    // カードの右側に「見た目は地図だが実際はこの透明なコンテナが
+    // クリックを奪ってしまう」帯ができてしまっていた。コンテナに
+    // pointer-events-noneを、実際にクリックを受けるCardにはpointer-events-autoを
+    // 指定し、コンテナの透明な部分だけクリックを地図へ素通りさせる
+    // (ヘッダー/フッター等で使っている.cocode-topbarと同じ考え方)。
+    return (
+      <div
+        className={`pointer-events-none absolute top-4 left-4 right-4 z-10 flex flex-wrap items-start justify-center gap-3${overlayClassName ? ` ${overlayClassName}` : ""}`}
+      >
+        <Card className="pointer-events-auto flex w-full max-w-105 flex-col gap-4.5 p-7">
+          <div className="flex items-start justify-between gap-3">
+            {title && <p className="text-sm text-muted">{title}</p>}
+            <Button isIconOnly variant="ghost" size="sm" onPress={() => setCollapsed(true)} className="shrink-0" aria-label="地図を確認するため折りたたむ">
+              <ChevronUp className="size-4" aria-hidden />
+            </Button>
+          </div>
 
-          <hr className="cocode-divider" />
+          <Button variant="outline" onPress={picker.useCurrentLocation} isDisabled={picker.locating}>
+            <LocateFixed className="size-4.5" aria-hidden />
+            {picker.locating ? "取得中…" : "現在地を使う"}
+          </Button>
+          <Button variant="outline" onPress={picker.chooseFromMap} isDisabled={picker.locating}>
+            <MapIcon className="size-4.5" aria-hidden />
+            地図から選択する
+          </Button>
 
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <label className="cocode-hint" htmlFor="cocode-dest-address-input">
-              🔍 住所で検索
-            </label>
-            <div style={{ display: "flex", gap: 8 }}>
-              <input
+          <hr className="my-0.5 border-border" />
+
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="cocode-dest-address-input" className="flex items-center gap-1.5">
+              <Search className="size-4" aria-hidden />
+              住所で検索
+            </Label>
+            <div className="flex gap-2">
+              <Input
                 id="cocode-dest-address-input"
                 type="text"
                 value={picker.addressQuery}
@@ -65,77 +126,83 @@ export function DestinationPickerPanel({
                   if (e.key === "Enter") picker.runAddressSearch();
                 }}
                 placeholder="例: 渋谷駅"
-                className="cocode-text-input"
-                style={{ flex: 1, minWidth: 0 }}
+                fullWidth
+                className="min-w-0 flex-1"
               />
-              <button
-                className="cocode-btn cocode-btn-secondary"
-                onClick={picker.runAddressSearch}
-                disabled={picker.searching}
-                style={{ flexShrink: 0, whiteSpace: "nowrap" }}
-              >
+              <Button variant="outline" onPress={picker.runAddressSearch} isDisabled={picker.searching} className="shrink-0 whitespace-nowrap">
                 {picker.searching ? "検索中…" : "検索"}
-              </button>
+              </Button>
             </div>
             {picker.addressResults.length > 0 && (
-              <ul className="cocode-address-results">
+              <ul className="flex max-h-40 flex-col gap-1 overflow-y-auto">
                 {picker.addressResults.map((r, i) => (
                   <li key={i}>
-                    <button className="cocode-address-result-btn" onClick={() => picker.pickAddressResult(r)}>
+                    <Button variant="outline" fullWidth className="justify-start text-left font-normal" onPress={() => picker.pickAddressResult(r)}>
                       {r.label}
-                    </button>
+                    </Button>
                   </li>
                 ))}
               </ul>
             )}
           </div>
 
-          {picker.error && <p className="cocode-error">{picker.error}</p>}
+          {picker.error && <p className="text-sm text-danger">{picker.error}</p>}
 
           {onCancelAll && (
-            <button className="cocode-btn cocode-btn-secondary" onClick={onCancelAll}>
+            <Button variant="outline" onPress={onCancelAll}>
               キャンセル
-            </button>
+            </Button>
           )}
-        </div>
+        </Card>
       </div>
     );
   }
 
+  // pointer-events-none/auto(2026-09-02再修正、「PC画面でモーダル横に目的地
+  // ピンを置けない」の対応): choose画面と同じ理由。picking画面はまさに
+  // 「地図をタップしてピンの位置を決める」段階であり、この不具合の影響が
+  // 最も直接的に現れる場所だった。
   return (
-    <div className={`cocode-topbar${overlayClassName ? ` ${overlayClassName}` : ""}`}>
-      <div className="cocode-glass cocode-form-card cocode-picking-card">
-        {picker.point ? (
-          <p className="cocode-hint">
-            {picker.point.address
-              ? `「${picker.point.address}」を`
-              : `地点を選択しました(${picker.point.lat.toFixed(5)}, ${picker.point.lng.toFixed(5)})を`}
-            目的地とします。
-          </p>
-        ) : (
-          <p className="cocode-hint">地図をタップして目的地を指定してください。</p>
-        )}
+    <div
+      className={`pointer-events-none absolute top-4 left-4 right-4 z-10 flex flex-wrap items-start justify-between gap-3${overlayClassName ? ` ${overlayClassName}` : ""}`}
+    >
+      <Card className="pointer-events-auto flex w-full max-w-85 flex-col gap-3 p-4.5">
+        <div className="flex items-start justify-between gap-3">
+          {picker.point ? (
+            <p className="text-sm text-muted">
+              {picker.point.address
+                ? `「${picker.point.address}」を`
+                : `地点を選択しました(${picker.point.lat.toFixed(5)}, ${picker.point.lng.toFixed(5)})を`}
+              目的地とします。
+            </p>
+          ) : (
+            <p className="text-sm text-muted">地図をタップして目的地を指定してください。</p>
+          )}
+          <Button isIconOnly variant="ghost" size="sm" onPress={() => setCollapsed(true)} className="shrink-0" aria-label="地図を確認するため折りたたむ">
+            <ChevronUp className="size-4" aria-hidden />
+          </Button>
+        </div>
 
         {picker.point && (
           <>
             {children}
-            <button className="cocode-btn cocode-btn-primary" onClick={onConfirm} disabled={confirming}>
+            <Button variant="primary" onPress={onConfirm} isDisabled={confirming}>
               {confirming ? "処理中…" : confirmLabel}
-            </button>
+            </Button>
           </>
         )}
 
-        <button className="cocode-btn cocode-btn-secondary" onClick={picker.reselect} disabled={confirming}>
+        <Button variant="outline" onPress={picker.reselect} isDisabled={confirming}>
           選びなおす
-        </button>
+        </Button>
         {onCancelAll && (
-          <button className="cocode-btn cocode-btn-secondary" onClick={onCancelAll} disabled={confirming}>
+          <Button variant="outline" onPress={onCancelAll} isDisabled={confirming}>
             キャンセル
-          </button>
+          </Button>
         )}
 
-        {picker.error && <p className="cocode-error">{picker.error}</p>}
-      </div>
+        {picker.error && <p className="text-sm text-danger">{picker.error}</p>}
+      </Card>
     </div>
   );
 }

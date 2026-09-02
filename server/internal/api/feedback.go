@@ -55,18 +55,18 @@ type createFeedbackReq struct {
 func (h *FeedbackHandler) create(c *gin.Context) {
 	var req createFeedbackReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON body"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "リクエストの形式が正しくありません"})
 		return
 	}
 	if req.Message == "" || utf8.RuneCountInString(req.Message) > maxFeedbackMessageLength {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "message is required and must be 2000 characters or fewer"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "メッセージを入力してください(2000文字以内)"})
 		return
 	}
 
 	_, createdAt, err := h.store.InsertFeedback(c.Request.Context(), req.Message, req.ReplyTo, req.Context)
 	if err != nil {
 		h.log.Error("insert feedback failed", "err", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save feedback"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "フィードバックの送信に失敗しました"})
 		return
 	}
 

@@ -39,6 +39,8 @@ export interface ParticipantPublic {
   live: LocationState | null;
   etaSeconds: number | null;
   arrived: boolean;
+  /** 位置情報オフモード(新設)。falseの間はliveが配信されない。 */
+  locationSharing: boolean;
   /** 電車モードの経路線(仕様書§7.1.1、2026-08-31実装)。NAVITIMEの経路形状を
    * 取得できた場合のみ設定される座標列(JSON文字列、[lng,lat]のペアの配列)。
    * 未設定/取得失敗時はMapView側が現在地→目的地の直線で代替表示する。 */
@@ -90,6 +92,15 @@ export interface CreateSessionResponse {
   sessionId: string;
   tokenHost: string;
   participantId: string;
+  shareUrl: string;
+  expiresAt: string;
+}
+
+// RegenerateLinkResponse: POST /api/sessions/:id/regenerate-link のレスポンス
+// (新設)。トークン漏えいが疑われる場合にホストが招待リンク・自分の再接続用
+// トークンを両方作り直すための機能で使う。
+export interface RegenerateLinkResponse {
+  tokenHost: string;
   shareUrl: string;
   expiresAt: string;
 }
@@ -157,7 +168,31 @@ export interface OutboundExpression {
   text?: string;
 }
 
+// 位置情報オフモード(新設)の切り替えをサーバーへ送る。
+export interface OutboundLocationSharingUpdate {
+  type: "location_sharing_update";
+  sharing: boolean;
+}
+
+// ゲストの明示的な「退出する」操作(新設)。復帰猶予を待たず即座に恒久退出
+// として扱ってほしいことをサーバーへ伝える(useCocodeSocket.tsのleave参照)。
+export interface OutboundLeave {
+  type: "leave";
+}
+
+// AppendOnlyActivityEntry: room がサーバー側で保持するアクティビティログの
+// 1件(参加/退出/到着/ひとことメッセージ)。ActivityEntry(client側のid付き型)
+// とは異なり、サーバーはidを持たない(sync受信側でローカルidを振る)。
+export interface RawActivityEntry {
+  kind: ActivityKind;
+  displayName: string;
+  text?: string;
+  at: string; // ISO 8601
+}
+
 // サーバー → クライアント方向のメッセージ。接続直後に届く初回同期フレーム。
+// activityLog(新設、p7残課題の対応): room が保持する直近のチャットログ。
+// リロード後もチャット履歴が失われないよう、sync受信のたびに含めて配信される。
 export interface InboundSync {
   type: "sync";
   role: Role;
@@ -165,6 +200,7 @@ export interface InboundSync {
   destination: Destination;
   expiresAt: string;
   participants: ParticipantPublic[];
+  activityLog: RawActivityEntry[];
 }
 
 // 新規ゲストが参加したことの通知（再接続時は届かない）。
@@ -173,9 +209,21 @@ export interface InboundParticipantJoined {
   participant: Pick<ParticipantPublic, "id" | "role" | "displayName" | "avatarIcon" | "transportMode">;
 }
 
-// 誰かが切断したことの通知。
+// 誰かが切断したことの通知(一時的な切断・復帰猶予中も含む)。マーカー削除・
+// 「〇〇さんとの接続が切れました」トースト用のシグナルで、恒久的な退出が
+// 確定したわけではない(復帰猶予中に再接続すれば取り消される、仕様書§5.6.1)。
 export interface InboundParticipantLeft {
   type: "participant_left";
+  participantId: string;
+  displayName: string;
+}
+
+// 誰かの退出が恒久的に確定したことの通知(新設、p7残課題の対応)。
+// 復帰猶予切れ、またはゲストの明示的な「退出する」操作で発生する。
+// チャットのアクティビティログへの「〇〇さんが退出しました」記録は
+// このイベントの受信時にのみ行う(participant_leftでは行わない)。
+export interface InboundParticipantDeparted {
+  type: "participant_departed";
   participantId: string;
   displayName: string;
 }
@@ -232,10 +280,20 @@ export interface InboundReasonEvent {
   type: "session_ended" | "session_expired";
 }
 
-// エラー通知（不正なトークン、セッション消失、バリデーション失敗など）。
+// エラー通知(不正なトークン、セッション消失、バリデーション失敗など)。
 export interface InboundErrorEvent {
   type: "error";
   message: string;
+}
+
+// 誰かが位置情報オフモードを切り替えた通知(新設)。sharing=falseの場合、
+// サーバー側でも既にその参加者のliveはnilにクリアされているため、
+// 受信側はこの参加者のliveをnullにして地図マーカーを消す。
+export interface InboundParticipantSharingUpdated {
+  type: "participant_sharing_updated";
+  participantId: string;
+  displayName: string;
+  sharing: boolean;
 }
 
 // サーバーから届きうる全メッセージのユニオン型。
@@ -243,9 +301,11 @@ export type InboundMessage =
   | InboundSync
   | InboundParticipantJoined
   | InboundParticipantLeft
+  | InboundParticipantDeparted
   | InboundPeerLocation
   | InboundParticipantUpdated
   | InboundParticipantArrived
   | InboundPeerExpression
+  | InboundParticipantSharingUpdated
   | InboundReasonEvent
   | InboundErrorEvent;

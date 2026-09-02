@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { Button, Card, Input, Label, Switch } from "@heroui/react";
 import { MapView } from "./MapView";
 import { AvatarPicker } from "./AvatarPicker";
 import { TransportPicker } from "./TransportPicker";
@@ -19,14 +20,17 @@ interface CreateFormProps {
     participantId: string,
     shareUrl: string,
     transportMode: TransportMode,
-    expiresAt: string
+    expiresAt: string,
+    /** 位置情報オフモード(2026-09-02新設)。falseの場合、参加直後から
+     * 自分の位置情報を共有しない(LiveSession側の切り替えでいつでもオンに戻せる)。 */
+    locationSharing: boolean
   ) => void;
   /** 「トップ画面に戻る」押下時に呼ばれる(2026-08-31新設)。 */
   onCancel: () => void;
 }
 
 /**
- * ホストの入口画面。セッション（＝共有リンク）が存在する前に、
+ * ホストの入口画面。セッション(=共有リンク)が存在する前に、
  * ここで待ち合わせ地点を選んでおく必要がある — 仕様書§5.1/§5.2/§10-4により、
  * 待ち合わせ地点が未設定のままリンクを発行することは意図的に禁止されている。
  *
@@ -45,13 +49,20 @@ export function CreateForm({ onCreated, onCancel }: CreateFormProps) {
   const [displayName, setDisplayName] = useState("");
   const [avatarIcon, setAvatarIcon] = useState(DEFAULT_AVATAR_ICON);
   const [transportMode, setTransportMode] = useState<TransportMode>("walk");
+  // 位置情報オフモード(2026-09-02新設、共有開始前に選択できるようにする)。
+  // 既定はオン — cocodeの主目的が位置共有であるため。
+  const [locationSharing, setLocationSharing] = useState(true);
   const [profileError, setProfileError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // 移動手段選択時に目安所要時間も表示するため(2026-08-31新設、ゲスト参加時・
   // フッターの変更と共通のUI)、目的地確定パネルに到達してからホストの現在地を
   // 取得する(それより前に位置情報の許可を求めないようenabledで制御)。
-  const { point: myPoint } = useLiveLocation(profileConfirmed);
+  // locationSharingがオフの間は、目的地確定パネルに到達していても位置情報の
+  // 許可自体を求めない(2026-09-02追加)。
+  // highAccuracy=false(2026-09-02新設): この画面は経路プレビュー・ETA目安の
+  // 表示が目的で、GPSの厳密な精度より現在地の表示速度を優先する(§geolocation.ts参照)。
+  const { point: myPoint } = useLiveLocation(profileConfirmed && locationSharing, false);
   const myLive: LocationState | null = myPoint
     ? { lat: myPoint.lat, lng: myPoint.lng, accuracy: myPoint.accuracy, updatedAt: new Date().toISOString() }
     : null;
@@ -85,7 +96,7 @@ export function CreateForm({ onCreated, onCancel }: CreateFormProps) {
         displayName.trim(),
         avatarIcon
       );
-      onCreated(res.sessionId, res.tokenHost, res.participantId, res.shareUrl, transportMode, res.expiresAt);
+      onCreated(res.sessionId, res.tokenHost, res.participantId, res.shareUrl, transportMode, res.expiresAt, locationSharing);
     } catch (e) {
       setError(e instanceof Error ? e.message : "セッションの作成に失敗しました。時間をおいて再度お試しください。");
       setCreating(false);
@@ -95,32 +106,34 @@ export function CreateForm({ onCreated, onCancel }: CreateFormProps) {
   if (!profileConfirmed) {
     return (
       <div className="cocode-screen">
-        <div className="cocode-modal-backdrop">
-          <div className="cocode-glass cocode-form-card">
-            <p className="cocode-subtitle">まずはあなたのプロフィールを入力してください。</p>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-5">
+          <Card className="flex w-full max-w-105 flex-col gap-4.5 p-7">
+            <p className="text-sm leading-relaxed text-muted">まずはあなたのプロフィールを入力してください。</p>
 
-            <label className="cocode-hint" htmlFor="cocode-display-name">
-              表示名(20文字以内)
-            </label>
-            <input
-              id="cocode-display-name"
-              type="text"
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value.slice(0, 20))}
-              placeholder="例: たろう"
-              className="cocode-text-input"
-            />
-            <label className="cocode-hint">アイコン</label>
-            <AvatarPicker value={avatarIcon} onChange={setAvatarIcon} />
-            {profileError && <p className="cocode-error">{profileError}</p>}
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="cocode-display-name">表示名(20文字以内)</Label>
+              <Input
+                id="cocode-display-name"
+                type="text"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value.slice(0, 20))}
+                placeholder="例: たろう"
+                fullWidth
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>アイコン</Label>
+              <AvatarPicker value={avatarIcon} onChange={setAvatarIcon} />
+            </div>
+            {profileError && <p className="text-sm text-danger">{profileError}</p>}
 
-            <button className="cocode-btn cocode-btn-primary" onClick={submitProfile}>
+            <Button variant="primary" onPress={submitProfile}>
               次へ(待ち合わせ場所を決める)
-            </button>
-            <button className="cocode-btn cocode-btn-secondary" onClick={onCancel}>
+            </Button>
+            <Button variant="outline" onPress={onCancel}>
               トップ画面に戻る
-            </button>
-          </div>
+            </Button>
+          </Card>
         </div>
       </div>
     );
@@ -130,10 +143,19 @@ export function CreateForm({ onCreated, onCancel }: CreateFormProps) {
     <div className="cocode-screen">
       <MapView
         target={previewTarget}
-        participants={[]}
+        participants={
+          myLive
+            ? [{ id: "preview-self", lat: myLive.lat, lng: myLive.lng, label: displayName || "あなた", isSelf: true, transportMode, arrived: false }]
+            : []
+        }
         pickingTarget={picker.step === "picking"}
         onPickTarget={picker.handleMapPick}
         flyToTargetSignal={picker.flyToSignal}
+        // refitOnGrowth(2026-09-02新設): LandingGuest(ゲスト)と同じく、自分の
+        // 現在地から目的地までを地図内に収めて見せる。目的地確定前は現在地
+        // だけでフィットし、目的地が決まった時点で両方が収まるよう再フィット
+        // する。
+        refitOnGrowth
       />
 
       <DestinationPickerPanel
@@ -143,9 +165,24 @@ export function CreateForm({ onCreated, onCancel }: CreateFormProps) {
         confirming={creating}
         onConfirm={confirm}
       >
-        <label className="cocode-hint">移動手段</label>
-        <TransportPicker value={transportMode} onChange={setTransportMode} etaByMode={etaByMode} />
-        {error && <p className="cocode-error">{error}</p>}
+        <div className="flex flex-col gap-1.5">
+          <Label>移動手段</Label>
+          <TransportPicker value={transportMode} onChange={setTransportMode} etaByMode={etaByMode} />
+        </div>
+
+        <Switch isSelected={locationSharing} onChange={setLocationSharing}>
+          <Switch.Content>
+            <Switch.Control>
+              <Switch.Thumb />
+            </Switch.Control>
+            位置情報を共有する
+          </Switch.Content>
+        </Switch>
+        <p className="-mt-2 text-xs leading-relaxed text-muted">
+          オフにすると、参加後もあなたの現在地は相手に共有されません(あとからいつでも切り替えられます)。
+        </p>
+
+        {error && <p className="text-sm text-danger">{error}</p>}
       </DestinationPickerPanel>
     </div>
   );

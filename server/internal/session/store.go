@@ -47,6 +47,11 @@ type Store interface {
 	// UpdateTarget はセッションの目的地を更新する。
 	UpdateTarget(ctx context.Context, sessionID string, lat, lng float64, address string, updatedAt time.Time) error
 
+	// RegenerateTokens はホスト/ゲストのトークンを両方新しい値へ差し替える
+	// (トークン漏えいが疑われる場合の安全弁、新設)。差し替え後、古いトークンは
+	// 新規参加・再接続いずれにも使えなくなる。
+	RegenerateTokens(ctx context.Context, sessionID, newTokenHost, newTokenGuest string) error
+
 	// UpdateParticipantLive は参加者のライブ位置を更新する。
 	UpdateParticipantLive(ctx context.Context, participantID string, loc LocationState) error
 
@@ -59,6 +64,11 @@ type Store interface {
 
 	// UpdateParticipantArrival は参加者の到着時刻を記録する（仕様書§12.1-①）。
 	UpdateParticipantArrival(ctx context.Context, participantID string, arrivedAt time.Time) error
+
+	// UpdateParticipantSharing は位置情報オフモード(新設)を更新する。
+	// sharing=falseの場合、ライブ位置(live_*列)も併せてNULLにする — 他参加者の
+	// 画面に最後の位置が固まったまま残らないようにするため。
+	UpdateParticipantSharing(ctx context.Context, participantID string, sharing bool) error
 
 	// Delete はセッションを削除する（participants は ON DELETE CASCADE で連動削除）。
 	Delete(ctx context.Context, id string) error

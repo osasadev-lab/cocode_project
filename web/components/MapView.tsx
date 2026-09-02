@@ -4,7 +4,23 @@ import { useEffect, useRef, type MutableRefObject } from "react";
 import maplibregl, { type LngLatLike } from "maplibre-gl";
 import { currentMapStyleUrl, isDarkHours } from "@/lib/mapStyle";
 import { fetchRoute } from "@/lib/routing";
+import { parseTrainPolyline, trimRouteToPosition } from "@/lib/routeGeometry";
 import type { LiveParticipant, LocationState } from "@/lib/types";
+
+// マーカーはmaplibreがReact外のDOM要素として直接マウントするため、絵文字の
+// 代わりにJSXではなくSVGマークアップ文字列を使う(2026-09-02改訂、絵文字廃止
+// 方針)。パス自体はアプリ全体のアイコンと揃えるためlucideの定義から採用した
+// (lucide-react自体はReactコンポーネントのみを提供しHTML文字列を返さないため、
+// ここでは直接SVG文字列として埋め込む)。
+const LUCIDE_SVG_ATTRS = 'xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"';
+// 待ち合わせ地点マーカー用(2026-09-02改訂: 旗アイコン(細い輪郭線のみ)が
+// 地図の背景に紛れて見づらいという指摘への対応。地図上のマーカーは他の
+// UIアイコンと違い輪郭線ではなく塗りつぶしが基本の慣習(Google Maps等)に
+// 合わせ、lucideのMapPinの形状を塗りつぶし+白縁取りのピン型に変更した。
+// アバターの丸いライブ位置マーカーとも形状で明確に区別できる)。
+const TARGET_MARKER_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="34" height="34"><path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0" fill="currentColor" stroke="white" stroke-width="1.5"/><circle cx="12" cy="10" r="3" fill="white"/></svg>`;
+// 到着バッジ用。
+const ARRIVED_BADGE_SVG = `<svg ${LUCIDE_SVG_ATTRS} width="11" height="11"><path d="M20 6 9 17l-5-5" /></svg>`;
 
 // OSRMで経路取得する移動手段("walk"|"car")。電車モードはOSRMを使わず、
 // 別ロジック(drawTrainRoute参照)で描画する。
@@ -13,24 +29,6 @@ function routeProfileFor(mode: LiveParticipant["transportMode"]): RouteProfile |
   return mode === "walk" || mode === "car" ? mode : null;
 }
 
-// parseTrainPolyline: サーバー(NAVITIME経由)から届いたroutePolyline
-// (JSON文字列、[lng,lat]のペアの配列)をMapLibreの座標配列にデコードする
-// (2026-08-31実装、§電車経路描画)。壊れたデータ・想定外の形状は黙って
-// nullを返す(呼び出し元は直線フォールバックへ切り替える)。
-function parseTrainPolyline(polyline: string): [number, number][] | null {
-  try {
-    const parsed = JSON.parse(polyline);
-    if (!Array.isArray(parsed) || parsed.length === 0) return null;
-    const coords: [number, number][] = [];
-    for (const p of parsed) {
-      if (!Array.isArray(p) || p.length < 2 || typeof p[0] !== "number" || typeof p[1] !== "number") return null;
-      coords.push([p[0], p[1]]);
-    }
-    return coords;
-  } catch {
-    return null;
-  }
-}
 
 // ダーク/ライトの時間帯境界(18:00, 4:00)をまたいだかを再判定する間隔（仕様書§4）。
 const STYLE_RECHECK_INTERVAL_MS = 5 * 60 * 1000;
@@ -58,6 +56,21 @@ interface MapViewProps {
    * 2026-08-31新設）。初回マウント時のfitBounds(maybeFitBounds)とは別に、
    * 2回目以降のtarget変更でも地図を追従させるためのシグナル。 */
   flyToTargetSignal?: number;
+  /** trueの場合、地図コンテナ下端に画面下部固定フッター(仕様書§14.9)ぶんの
+   * 余白を確保し、MapLibre標準の+/-ズームボタンがフッターと重ならないよう
+   * ずらす（LiveSession.tsx専用、2026-09-02新設・p7残課題の対応）。
+   * CreateForm/LandingGuestの目的地選択画面はこのフッターを持たないため
+   * 指定しない（既定false）。 */
+  hasFooterOverlay?: boolean;
+  /** trueの場合、maybeFitBounds(後述)は表示地点の数が初回フィット時より
+   * 増えるたびに再度フィットし直す(2026-09-02新設)。CreateForm/LandingGuestの
+   * 目的地確認画面では、まずtargetだけでフィットした直後に自分の現在地
+   * (GPS取得には少し時間がかかる)が加わることが多く、既定の「初回のみ」
+   * 挙動のままだと目的地だけがフィットされたまま固定され、現在地から目的地
+   * までの経路全体が画面に収まらない不具合があった。ライブマップ
+   * (LiveSession)では既定のfalseのまま(以降は自動追従しない、ユーザーが
+   * 自由に地図を操作できるようにするため)。 */
+  refitOnGrowth?: boolean;
 }
 
 // MapLibre の地図を表示し、待ち合わせ地点・全参加者のライブ位置・
@@ -70,6 +83,17 @@ function emptyLine(): GeoJSON.Feature<GeoJSON.LineString> {
 
 function lineFromCoords(coords: [number, number][]): GeoJSON.Feature<GeoJSON.LineString> {
   return { type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } };
+}
+
+// isFiniteLatLng: MapLibreへ座標を渡す前に、有限数(NaN/undefined/Infinityで
+// ない)であることを確認するガード(2026-09-02新設)。サーバー側のデータ不備・
+// 一時的な取得前状態(§19の位置情報未取得中等)・開発中のホットリロードによる
+// 古い状態の取り残しなど、原因を問わず不正な座標が渡ってきた場合に
+// MapLibreの`Invalid LngLat object`例外でアプリ全体がクラッシュしてしまう
+// (Next.jsのエラーオーバーレイに落ちる)不具合の対応。呼び出し元は該当の
+// マーカー・地点の描画だけをスキップし、他の描画には影響させない。
+function isFiniteLatLng(lat: number, lng: number): boolean {
+  return Number.isFinite(lat) && Number.isFinite(lng);
 }
 
 function routeSourceId(participantId: string): string {
@@ -87,13 +111,13 @@ function routeLayerId(participantId: string): string {
 function upsertMarker(
   map: maplibregl.Map,
   ref: MutableRefObject<maplibregl.Marker | null>,
-  opts: { className: string; anchor: "bottom" | "center"; text?: string },
+  opts: { className: string; anchor: "bottom" | "center"; html?: string },
   lngLat: LngLatLike
 ): void {
   if (!ref.current) {
     const el = document.createElement("div");
     el.className = opts.className;
-    if (opts.text) el.textContent = opts.text;
+    if (opts.html) el.innerHTML = opts.html;
     ref.current = new maplibregl.Marker({ element: el, anchor: opts.anchor });
   }
   ref.current.setLngLat(lngLat).addTo(map);
@@ -110,7 +134,7 @@ interface LiveMarkerEntry {
 // participantIdをキーにしたMapで作成・更新する（N人対応、仕様書§8）。
 // 名前・アイコンが変わった場合(プロフィール編集機能用)に備え、
 // ラベル・アイコン要素は毎回内容を更新する。到着済み(仕様書§12.1-①)の
-// 場合はアバターの右上に🏁バッジを表示する。
+// 場合はアバターの右上にチェックマークバッジを表示する。
 function upsertLiveMarker(
   map: maplibregl.Map,
   markersRef: MutableRefObject<Map<string, LiveMarkerEntry>>,
@@ -131,7 +155,7 @@ function upsertLiveMarker(
     icon.alt = "";
     const badge = document.createElement("span");
     badge.className = "cocode-marker-arrived-badge";
-    badge.textContent = "🏁";
+    badge.innerHTML = ARRIVED_BADGE_SVG;
     badge.hidden = true;
     ring.appendChild(pulse);
     ring.appendChild(icon);
@@ -188,11 +212,18 @@ function createRouteUpdater(setLine: (coords: [number, number][]) => void) {
         setLine([]);
         return;
       }
-      const key = trainPolyline ? `train-shape|${trainPolyline}` : `train-straight|${from.lat},${from.lng}|${to.lat},${to.lng}`;
-      if (key === lastKey) return;
-      lastKey = key;
+      // 電車モードのETA/経路(trainPolyline)自体は間引かれた頻度でしか
+      // 再計算されない(仕様書§7.1「呼び出し頻度の抑制」)が、ライブ位置
+      // (from)はそれより高頻度で届く。そのため、trainPolylineが前回と
+      // 同じでも、現在地が進むたびに経路線を通過済み区間ぶん切り詰めて
+      // 描画し直す(仕様書§9.2「経路線の進行に伴う消去」、2026-09-02実装)。
+      // walk/car側のようなキー比較によるスキップは行わない —
+      // trimRouteToPositionは軽量な幾何演算のみでネットワークI/Oを伴わない
+      // ため、位置更新のたびに毎回実行しても負荷は問題にならない。
+      lastKey = ""; // walk/car側のkeyと絶対に衝突しない値にしておく(モード切替対策)
       const shapeCoords = trainPolyline ? parseTrainPolyline(trainPolyline) : null;
-      setLine(shapeCoords ?? [[from.lng, from.lat], [to.lng, to.lat]]);
+      const baseCoords: [number, number][] = shapeCoords ?? [[from.lng, from.lat], [to.lng, to.lat]];
+      setLine(trimRouteToPosition(baseCoords, from));
       return;
     }
     if (!from || !to || !profile) {
@@ -288,6 +319,8 @@ export function MapView({
   fitAllSignal,
   focusTargetSignal,
   flyToTargetSignal,
+  hasFooterOverlay,
+  refitOnGrowth,
 }: MapViewProps) {
   // マップ本体・マーカー各種は MapLibre の命令的 API を扱うため ref で保持する
   // （React の再レンダリングごとに作り直さないようにするため）。
@@ -295,7 +328,10 @@ export function MapView({
   const mapRef = useRef<maplibregl.Map | null>(null);
   const targetMarkerRef = useRef<maplibregl.Marker | null>(null);
   const markersRef = useRef<Map<string, LiveMarkerEntry>>(new Map());
-  const hasFitRef = useRef(false);
+  // fittedPointCountRef: 直近でmaybeFitBoundsが実際にフィットした際の地点数
+  // (0=まだ一度もフィットしていない)。refitOnGrowth時、この数より地点数が
+  // 増えた場合のみ再フィットする(下記maybeFitBounds参照)。
+  const fittedPointCountRef = useRef(0);
   const recenterSeenRef = useRef(recenterSignal);
   const fitAllSeenRef = useRef(fitAllSignal);
   const focusTargetSeenRef = useRef(focusTargetSignal);
@@ -424,30 +460,62 @@ export function MapView({
   // すべて収まるようにカメラを1度だけ調整する。以降は自動追従しない
   // （ユーザーが自由に地図を操作できるようにするため）。
   function maybeFitBounds(map: maplibregl.Map) {
-    if (hasFitRef.current) return;
+    // 地図の読み込み・コンテナのサイズ確定が終わる前にjumpTo/fitBoundsを
+    // 呼ぶと、キャンバスがまだ正しいサイズを持っておらず、意図した地点とは
+    // 異なる位置・ズームに合わせられてしまうことがある(2026-09-02修正)。
+    // CreateForm(先に地図が表示されユーザー操作を経てからtargetが決まる)
+    // では顕在化しないが、LandingGuest(targetが最初から決まっており、地図
+    // マウント直後にmaybeFitBoundsが呼ばれる)で、目的地が全く見当違いの
+    // 位置(既定の地図中心のまま)になる不具合として発見された。map.loaded()
+    // がfalseの間は`load`イベントを待ってから同じ処理をやり直す
+    // (下記のfittedPointCountRefのチェックにより、複数回リトライを仕込んでも
+    // 実際にfitするのは想定した回数だけ)。
+    if (!map.loaded()) {
+      map.once("load", () => maybeFitBounds(map));
+      return;
+    }
     const points: LngLatLike[] = [];
-    if (target) points.push([target.lng, target.lat]);
-    for (const p of participants) points.push([p.lng, p.lat]);
+    if (target && isFiniteLatLng(target.lat, target.lng)) points.push([target.lng, target.lat]);
+    for (const p of participants) if (isFiniteLatLng(p.lat, p.lng)) points.push([p.lng, p.lat]);
     if (points.length === 0) return;
+
+    const fittedBefore = fittedPointCountRef.current > 0;
+    // refitOnGrowth(2026-09-02新設): 目的地確認画面(CreateForm/LandingGuest)
+    // では、GPS取得に時間がかかる自分の現在地がtargetより後から届くことが
+    // 多い。既定の「初回のみフィット」のままだと目的地だけでフィットされた
+    // まま固定され、現在地→目的地の経路全体が画面に収まらない不具合が
+    // あったため、地点数が増えるたびに再フィットできるようにする。
+    // ライブマップ(refitOnGrowth未指定)では引き続き初回のみに限定する
+    // (ユーザーが自由に地図を操作できるようにするため)。
+    if (fittedBefore && !(refitOnGrowth && points.length > fittedPointCountRef.current)) return;
+
+    // 初回フィットは(まだ何も表示されていない状態への配置なので)瞬時に、
+    // 地点が増えたことによる再フィットは(既に見えている画面が変化するため)
+    // アニメーションさせる。
+    const duration = fittedBefore ? 500 : 0;
     if (points.length === 1) {
-      map.jumpTo({ center: points[0], zoom: 15 });
+      if (duration > 0) {
+        map.flyTo({ center: points[0], zoom: 15, duration });
+      } else {
+        map.jumpTo({ center: points[0], zoom: 15 });
+      }
     } else {
       const bounds = points
         .slice(1)
         .reduce((b, p) => b.extend(p), new maplibregl.LngLatBounds(points[0], points[0]));
-      map.fitBounds(bounds, { padding: 80, maxZoom: 16, duration: 0 });
+      map.fitBounds(bounds, { padding: 80, maxZoom: 16, duration });
     }
-    hasFitRef.current = true;
+    fittedPointCountRef.current = points.length;
   }
 
-  // 待ち合わせ地点マーカー（🚩）を更新する。
+  // 待ち合わせ地点マーカーを更新する。
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !target) return;
+    if (!map || !target || !isFiniteLatLng(target.lat, target.lng)) return;
     upsertMarker(
       map,
       targetMarkerRef,
-      { className: "cocode-marker cocode-marker-target", anchor: "bottom", text: "🚩" },
+      { className: "cocode-marker cocode-marker-target", anchor: "bottom", html: TARGET_MARKER_SVG },
       [target.lng, target.lat]
     );
     maybeFitBounds(map);
@@ -477,6 +545,7 @@ export function MapView({
     }
 
     for (const p of participants) {
+      if (!isFiniteLatLng(p.lat, p.lng)) continue;
       activeRouteIdsRef.current.add(p.id);
       routeColorRef.current.set(p.id, p.isSelf ? "#3b82f6" : "#f97316");
       upsertLiveMarker(
@@ -500,7 +569,7 @@ export function MapView({
     recenterSeenRef.current = recenterSignal;
     const map = mapRef.current;
     const self = participants.find((p) => p.isSelf);
-    if (!map || !self) return;
+    if (!map || !self || !isFiniteLatLng(self.lat, self.lng)) return;
     map.flyTo({ center: [self.lng, self.lat], zoom: Math.max(map.getZoom(), 15), duration: 500 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recenterSignal]);
@@ -515,8 +584,8 @@ export function MapView({
     if (!map) return;
     const { target: t, participants: ps } = latestPropsRef.current;
     const points: LngLatLike[] = [];
-    if (t) points.push([t.lng, t.lat]);
-    for (const p of ps) points.push([p.lng, p.lat]);
+    if (t && isFiniteLatLng(t.lat, t.lng)) points.push([t.lng, t.lat]);
+    for (const p of ps) if (isFiniteLatLng(p.lat, p.lng)) points.push([p.lng, p.lat]);
     if (points.length === 0) return;
     if (points.length === 1) {
       map.flyTo({ center: points[0], zoom: 15, duration: 500 });
@@ -534,7 +603,7 @@ export function MapView({
     focusTargetSeenRef.current = focusTargetSignal;
     const map = mapRef.current;
     const { target: t } = latestPropsRef.current;
-    if (!map || !t) return;
+    if (!map || !t || !isFiniteLatLng(t.lat, t.lng)) return;
     map.flyTo({ center: [t.lng, t.lat], zoom: Math.max(map.getZoom(), 15), duration: 500 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusTargetSignal]);
@@ -547,12 +616,15 @@ export function MapView({
     flyToTargetSeenRef.current = flyToTargetSignal;
     const map = mapRef.current;
     const { target: t } = latestPropsRef.current;
-    if (!map || !t) return;
+    if (!map || !t || !isFiniteLatLng(t.lat, t.lng)) return;
     map.flyTo({ center: [t.lng, t.lat], zoom: Math.max(map.getZoom(), 15), duration: 500 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flyToTargetSignal]);
 
   return (
-    <div ref={containerRef} className={`cocode-map${pickingTarget ? " cocode-map-picking" : ""}`} />
+    <div
+      ref={containerRef}
+      className={`cocode-map${pickingTarget ? " cocode-map-picking" : ""}${hasFooterOverlay ? " cocode-map-with-footer" : ""}`}
+    />
   );
 }

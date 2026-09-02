@@ -45,12 +45,12 @@ export const BUY_ME_A_COFFEE_URL = required(process.env.NEXT_PUBLIC_BUY_ME_A_COF
 export const LIVE_UPDATE_MIN_INTERVAL_MS = 5000;
 export const LIVE_UPDATE_MIN_DISTANCE_M = 15;
 
-// 地図マーカーの到着バッジ(🏁)を表示する半径(m)。サーバー側の到着判定
-// (server/internal/hub/hub.go の arrivalRadiusMeters)と同じ値を使う。
+// 地図マーカーの到着バッジ(チェックマーク)を表示する半径(m)。サーバー側の
+// 到着判定(server/internal/hub/hub.go の arrivalRadiusMeters)と同じ値を使う。
 // 到着は一度成立すると恒久的な事実として参加者一覧には残り続けるが
 // (socket.arrivedIds)、地図マーカーのバッジは「現在この範囲内にいる間」だけ
 // 表示する(2026-08-31修正: 到着後に目的地から離れてもバッジが地図上に
-// 残り続け、離れた場所にいるのに🏁が付いているように見える不具合の対応)。
+// 残り続け、離れた場所にいるのにバッジが付いているように見える不具合の対応)。
 export const ARRIVAL_RADIUS_M = 50;
 
 // localStorage に保存する際のキー名。

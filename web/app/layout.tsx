@@ -1,10 +1,26 @@
 // アプリ全体のルートレイアウト。ページ共通のメタ情報・グローバル CSS を定義する。
 import type { Metadata, Viewport } from "next";
 import Script from "next/script";
+import { Toast } from "@heroui/react";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "./globals.css";
 import { ServiceWorkerRegister } from "@/components/ServiceWorkerRegister";
 import { ADSENSE_CLIENT_ID } from "@/lib/config";
+
+// HeroUIのダークモードはOS設定(prefers-color-scheme)ではなく.dark
+// クラス/data-theme属性で切り替わる(手動テーマ切り替えUIは無い設計方針、
+// globals.css参照)。静的書き出し(output: "export")のためサーバー側で
+// 事前判定できず、ハイドレーション前にこのスクリプトで即座にクラスを
+// 反映してチラつき(FOUC)を防ぐ。OS設定の変更にもその場で追従する。
+const THEME_INIT_SCRIPT = `(function(){try{
+  var mq = window.matchMedia("(prefers-color-scheme: dark)");
+  var apply = function (dark) {
+    document.documentElement.classList.toggle("dark", dark);
+    document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+  };
+  apply(mq.matches);
+  mq.addEventListener("change", function (e) { apply(e.matches); });
+} catch (e) {}})();`;
 
 export const metadata: Metadata = {
   title: "cocode | 待ち合わせ位置共有",
@@ -34,9 +50,15 @@ export const viewport: Viewport = {
 // RootLayout は全ページ共通の HTML 構造（<html>/<body>）を提供する。
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="ja">
+    <html lang="ja" suppressHydrationWarning>
       <body>
+        <Script id="theme-init" strategy="beforeInteractive">
+          {THEME_INIT_SCRIPT}
+        </Script>
         {children}
+        {/* 通知(目的地変更・エラー・参加者切断・スタンプ/リアクション等)は
+            すべて画面上部に表示する(2026-09-02改訂、ユーザー要望)。 */}
+        <Toast.Provider placement="top" />
         <ServiceWorkerRegister />
         {/* AdSenseローダーはパブリッシャーID設定時のみ読み込む(未設定時は
             スクリプト自体を配信しない、仕様書§15.1)。 */}

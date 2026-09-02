@@ -56,7 +56,7 @@ func (rl *rateLimiter) allow(key string) bool {
 func (rl *rateLimiter) middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !rl.allow(clientIP(c.Request)) {
-			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "too many requests, please try again shortly"})
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "リクエストが多すぎます。しばらくしてから再度お試しください"})
 			return
 		}
 		c.Next()

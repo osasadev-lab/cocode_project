@@ -65,6 +65,10 @@ create table if not exists participants (
   joined_at       timestamptz not null default now()
 );
 
+-- 位置情報オフモード(新設)。create table if not exists は既存テーブルに列を
+-- 追加しないため、既存本番テーブル向けに別途ALTER TABLEで補う。
+alter table participants add column if not exists location_sharing boolean not null default true;
+
 create table if not exists feedbacks (
   id         uuid primary key default gen_random_uuid(),
   message    text not null,
@@ -140,10 +144,11 @@ func (p *Postgres) InsertWithHost(ctx context.Context, tokenHost, tokenGuest str
 	}
 
 	host := &session.Participant{
-		SessionID:   rec.ID,
-		Role:        session.RoleHost,
-		DisplayName: hostDisplayName,
-		AvatarIcon:  hostAvatarIcon,
+		SessionID:       rec.ID,
+		Role:            session.RoleHost,
+		DisplayName:     hostDisplayName,
+		AvatarIcon:      hostAvatarIcon,
+		LocationSharing: true, // DB側のdefault trueと一致させる(RETURNINGで取得していないため明示)
 	}
 	const insertHost = `
 		insert into participants (session_id, role, display_name, avatar_icon)
@@ -183,7 +188,7 @@ func (p *Postgres) Get(ctx context.Context, id string) (*session.Record, error) 
 func (p *Postgres) ListParticipants(ctx context.Context, sessionID string) ([]*session.Participant, error) {
 	const q = `
 		select id, session_id, role, display_name, avatar_icon, transport_mode,
-		       live_lat, live_lng, live_accuracy, live_updated_at, eta_seconds, arrived_at, joined_at
+		       live_lat, live_lng, live_accuracy, live_updated_at, eta_seconds, arrived_at, joined_at, location_sharing
 		from participants where session_id = $1 order by joined_at
 	`
 	rows, err := p.db.QueryContext(ctx, q, sessionID)
@@ -224,10 +229,11 @@ func (p *Postgres) InsertParticipant(ctx context.Context, sessionID, displayName
 	}
 
 	part := &session.Participant{
-		SessionID:   sessionID,
-		Role:        session.RoleGuest,
-		DisplayName: displayName,
-		AvatarIcon:  avatarIcon,
+		SessionID:       sessionID,
+		Role:            session.RoleGuest,
+		DisplayName:     displayName,
+		AvatarIcon:      avatarIcon,
+		LocationSharing: true, // DB側のdefault trueと一致させる(RETURNINGで取得していないため明示)
 	}
 	const q = `
 		insert into participants (session_id, role, display_name, avatar_icon)
@@ -250,7 +256,7 @@ func (p *Postgres) InsertParticipant(ctx context.Context, sessionID, displayName
 func (p *Postgres) GetParticipant(ctx context.Context, sessionID, participantID string) (*session.Participant, error) {
 	const q = `
 		select id, session_id, role, display_name, avatar_icon, transport_mode,
-		       live_lat, live_lng, live_accuracy, live_updated_at, eta_seconds, arrived_at, joined_at
+		       live_lat, live_lng, live_accuracy, live_updated_at, eta_seconds, arrived_at, joined_at, location_sharing
 		from participants where session_id = $1 and id = $2
 	`
 	row := p.db.QueryRowContext(ctx, q, sessionID, participantID)
@@ -269,6 +275,16 @@ func (p *Postgres) UpdateTarget(ctx context.Context, sessionID string, lat, lng 
 	const q = `update sessions set dest_lat = $1, dest_lng = $2, dest_address = nullif($3, ''), dest_updated_at = $4 where id = $5`
 	if _, err := p.db.ExecContext(ctx, q, lat, lng, address, updatedAt, sessionID); err != nil {
 		return fmt.Errorf("update target: %w", err)
+	}
+	return nil
+}
+
+// RegenerateTokens はホスト/ゲストのトークンを両方新しい値へ差し替える
+// (トークン漏えいが疑われる場合の安全弁、新設)。
+func (p *Postgres) RegenerateTokens(ctx context.Context, sessionID, newTokenHost, newTokenGuest string) error {
+	const q = `update sessions set token_host = $1, token_guest = $2 where id = $3`
+	if _, err := p.db.ExecContext(ctx, q, newTokenHost, newTokenGuest, sessionID); err != nil {
+		return fmt.Errorf("regenerate tokens: %w", err)
 	}
 	return nil
 }
@@ -305,6 +321,25 @@ func (p *Postgres) UpdateParticipantArrival(ctx context.Context, participantID s
 	const q = `update participants set arrived_at = $1 where id = $2`
 	if _, err := p.db.ExecContext(ctx, q, arrivedAt, participantID); err != nil {
 		return fmt.Errorf("update participant arrival: %w", err)
+	}
+	return nil
+}
+
+// UpdateParticipantSharing は位置情報オフモード(新設)を更新する。オフにする
+// 場合はlive_*列も同じ文でNULLに戻す — 他参加者の画面に最後の位置が固まった
+// まま残らないようにするため(hub.UpdateLocationSharing参照)。
+func (p *Postgres) UpdateParticipantSharing(ctx context.Context, participantID string, sharing bool) error {
+	const q = `
+		update participants set
+			location_sharing = $1,
+			live_lat = case when $1 then live_lat else null end,
+			live_lng = case when $1 then live_lng else null end,
+			live_accuracy = case when $1 then live_accuracy else null end,
+			live_updated_at = case when $1 then live_updated_at else null end
+		where id = $2
+	`
+	if _, err := p.db.ExecContext(ctx, q, sharing, participantID); err != nil {
+		return fmt.Errorf("update participant sharing: %w", err)
 	}
 	return nil
 }
@@ -390,7 +425,7 @@ func scanParticipant(row rowScanner) (*session.Participant, error) {
 
 	if err := row.Scan(
 		&part.ID, &part.SessionID, &part.Role, &part.DisplayName, &part.AvatarIcon, &part.TransportMode,
-		&liveLat, &liveLng, &liveAccuracy, &liveUpdatedAt, &etaSeconds, &arrivedAt, &part.JoinedAt,
+		&liveLat, &liveLng, &liveAccuracy, &liveUpdatedAt, &etaSeconds, &arrivedAt, &part.JoinedAt, &part.LocationSharing,
 	); err != nil {
 		return nil, fmt.Errorf("scan participant: %w", err)
 	}

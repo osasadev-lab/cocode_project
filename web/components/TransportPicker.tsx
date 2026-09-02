@@ -1,5 +1,7 @@
 "use client";
 
+import { Car, Footprints, TrainFront } from "lucide-react";
+import { ToggleButton, ToggleButtonGroup } from "@heroui/react";
 import { formatEta } from "@/lib/eta";
 import type { TransportEtaMap } from "@/lib/useTransportEtaOptions";
 import type { TransportMode } from "@/lib/types";
@@ -15,36 +17,53 @@ interface TransportPickerProps {
   etaByMode?: TransportEtaMap;
 }
 
-const OPTIONS: { mode: TransportMode; icon: string; label: string }[] = [
-  { mode: "walk", icon: "🚶", label: "徒歩" },
-  { mode: "car", icon: "🚗", label: "車" },
-  { mode: "train", icon: "🚃", label: "電車" },
+const OPTIONS: { mode: TransportMode; icon: typeof Footprints; label: string }[] = [
+  { mode: "walk", icon: Footprints, label: "徒歩" },
+  { mode: "car", icon: Car, label: "車" },
+  { mode: "train", icon: TrainFront, label: "電車" },
 ];
 
 // 表示名・アイコン入力と合わせて移動手段も選んでもらうための共通ピッカー
 // (ホスト用CreateForm・ゲスト用LandingGuestで共用、2026-08-31新設)。
 // 選択結果はセッション作成/参加直後、WebSocket接続確立時に
 // transport_updateとして送信される(LiveSession側で処理)。
+// 2026-09-02改訂: HeroUIのToggleButtonGroup(単一選択)へ置き換え。
 export function TransportPicker({ value, onChange, etaByMode }: TransportPickerProps) {
   return (
-    <div className="cocode-transport-options">
+    <ToggleButtonGroup
+      selectionMode="single"
+      disallowEmptySelection
+      selectedKeys={[value]}
+      onSelectionChange={(keys) => {
+        const next = [...keys][0];
+        if (next) onChange(next as TransportMode);
+      }}
+      isDetached
+      fullWidth
+      className="flex w-full min-w-0 gap-2.5"
+    >
       {OPTIONS.map((opt) => {
         const eta = etaByMode?.[opt.mode];
+        const Icon = opt.icon;
         return (
-          <button
+          // min-w-0: flexアイテムの既定min-width:autoのままだと、ETA文言
+          // (例:「約12分」)を含む中身の自然幅が優先されflex-1が縮められず、
+          // 3つ並べたときにカード幅からはみ出していた(2026-09-02修正)。
+          // h-auto md:h-auto: HeroUIのToggleButtonの既定スタイル(.toggle-button
+          // 基底クラス)がh-10 md:h-9という固定高さを持っており、アイコン+
+          // ラベル+ETAの3段構成だとその高さに収まらず、ラベル・ETAの文字列が
+          // 常に見えなくなっていた(2026-09-02修正、不具合報告により発覚)。
+          <ToggleButton
             key={opt.mode}
-            type="button"
-            className={`cocode-transport-option${opt.mode === value ? " cocode-transport-option-active" : ""}`}
-            onClick={() => onChange(opt.mode)}
+            id={opt.mode}
+            className="flex h-auto min-w-0 flex-1 flex-col items-center gap-1 py-3.5 md:h-auto"
           >
-            <span className="cocode-transport-option-icon" aria-hidden>
-              {opt.icon}
-            </span>
-            <span>{opt.label}</span>
-            {eta != null && <span className="cocode-transport-option-eta">{formatEta(eta)}</span>}
-          </button>
+            <Icon className="size-5.5 shrink-0" aria-hidden />
+            <span className="truncate">{opt.label}</span>
+            {eta != null && <span className="w-full truncate text-center text-xs text-muted">{formatEta(eta)}</span>}
+          </ToggleButton>
         );
       })}
-    </div>
+    </ToggleButtonGroup>
   );
 }

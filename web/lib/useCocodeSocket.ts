@@ -7,6 +7,7 @@ import type {
   InboundMessage,
   LocationKind,
   ParticipantPublic,
+  RawActivityEntry,
   Role,
   RouteStep,
   TransportMode,
@@ -22,6 +23,16 @@ function nextActivityId(): string {
 }
 function pushActivity(log: ActivityEntry[], entry: Omit<ActivityEntry, "id">): ActivityEntry[] {
   return [{ ...entry, id: nextActivityId() }, ...log].slice(0, ACTIVITY_LOG_LIMIT);
+}
+
+// toActivityLog: sync フレームで届くサーバー側のアクティビティログ(id無し、
+// 古い順)をクライアント側の表現(id付き、新しい順)へ変換する
+// (p7残課題「リロードするとチャットのやり取りが消える」の対応)。
+function toActivityLog(raw: RawActivityEntry[]): ActivityEntry[] {
+  return raw
+    .map((entry) => ({ ...entry, id: nextActivityId() }))
+    .reverse()
+    .slice(0, ACTIVITY_LOG_LIMIT);
 }
 
 export type ConnectionStatus = "connecting" | "open" | "closed";
@@ -239,6 +250,9 @@ export function useCocodeSocket(sessionId: string | null, auth: SocketAuth | nul
               arrivedIds,
               errorMessage: null,
               joinFailed: false,
+              // サーバーが保持する直近のチャットログをそのまま採用する
+              // (p7残課題の対応。以前は空配列のままリロードのたびに消えていた)。
+              activityLog: toActivityLog(msg.activityLog ?? []),
             }));
             break;
           }
@@ -254,6 +268,7 @@ export function useCocodeSocket(sessionId: string | null, auth: SocketAuth | nul
                 live: null,
                 etaSeconds: null,
                 arrived: false,
+                locationSharing: true,
               });
               return {
                 ...s,
@@ -263,6 +278,11 @@ export function useCocodeSocket(sessionId: string | null, auth: SocketAuth | nul
             });
             break;
           case "participant_left":
+            // 一時的な切断(復帰猶予中も含む、仕様書§5.6.1)の通知。マーカー削除・
+            // 「接続が切れました」トーストのみ行い、チャットへの記録は行わない
+            // (恒久退出が確定するとは限らないため。p7残課題の対応 —
+            // 以前はここで即座に「退出しました」を記録していたため、ゲストの
+            // 単なるリロードでもホスト側にその記録だけが残ってしまっていた)。
             setState((s) => {
               const participants = new Map(s.participants);
               participants.delete(msg.participantId);
@@ -274,6 +294,22 @@ export function useCocodeSocket(sessionId: string | null, auth: SocketAuth | nul
                 ...s,
                 participants,
                 lastLeft: { participantId: msg.participantId, displayName: msg.displayName, seq: (s.lastLeft?.seq ?? 0) + 1 },
+              };
+            });
+            break;
+          case "participant_departed":
+            // 恒久的な退出が確定した通知(新設、p7残課題の対応)。復帰猶予切れ、
+            // またはゲストの明示的な「退出する」で発生する。チャットへの
+            // 「〇〇さんが退出しました」記録はここでのみ行う。マーカーは
+            // 通常既にparticipant_leftで消えているはずだが、明示的な
+            // 「退出する」の場合はparticipant_leftが送られない経路のため、
+            // 念のためここでも参加者マップから削除する(冪等)。
+            setState((s) => {
+              const participants = new Map(s.participants);
+              participants.delete(msg.participantId);
+              return {
+                ...s,
+                participants,
                 activityLog: pushActivity(s.activityLog, { kind: "left", displayName: msg.displayName, at: new Date().toISOString() }),
               };
             });
@@ -305,6 +341,8 @@ export function useCocodeSocket(sessionId: string | null, auth: SocketAuth | nul
                 arrived: existing?.arrived ?? s.arrivedIds.has(msg.participantId),
                 routePolyline: keepPreviousRoute ? existing?.routePolyline : msg.routePolyline,
                 routeSteps: keepPreviousRoute ? existing?.routeSteps : msg.routeSteps,
+                // ライブ位置が届いた時点で共有中であることは自明(2026-09-01新設)。
+                locationSharing: true,
               };
               const participants = new Map(s.participants);
               participants.set(msg.participantId, existing ? { ...existing, ...updated } : updated);
@@ -320,6 +358,23 @@ export function useCocodeSocket(sessionId: string | null, auth: SocketAuth | nul
                 ...existing,
                 displayName: msg.displayName,
                 avatarIcon: msg.avatarIcon,
+              });
+              return { ...s, participants };
+            });
+            break;
+          case "participant_sharing_updated":
+            // 位置情報オフモードの切り替え通知(新設)。sharing=falseの場合は
+            // サーバー側で既にliveがクリアされているため、こちらでもliveを
+            // nullにして地図マーカーを消す(「liveが無い参加者は描画しない」
+            // 既存ロジックがそのまま効く)。
+            setState((s) => {
+              const existing = s.participants.get(msg.participantId);
+              if (!existing) return s;
+              const participants = new Map(s.participants);
+              participants.set(msg.participantId, {
+                ...existing,
+                locationSharing: msg.sharing,
+                live: msg.sharing ? existing.live : null,
               });
               return { ...s, participants };
             });
@@ -433,6 +488,17 @@ export function useCocodeSocket(sessionId: string | null, auth: SocketAuth | nul
     wsRef.current?.close();
   }, []);
 
+  // leave はゲストの明示的な「退出する」操作用(新設、p7残課題の対応)。
+  // 単にdisconnect()するだけだと、サーバー側は他の切断(タブを閉じる・電波
+  // 瞬断)と区別できず、10分間の復帰猶予(仕様書§5.6.1)を経てから初めて
+  // チャットに「退出しました」が記録されていた。ここで先に"leave"フレームを
+  // 送ることで、サーバーに「復帰猶予を待たず即座に恒久退出扱いにしてよい」
+  // ことを明示的に伝える(server/internal/hub/hub.goのLeave参照)。
+  const leave = useCallback(() => {
+    send({ type: "leave" });
+    disconnect();
+  }, [disconnect]);
+
   // sendLocationUpdate は自分側の位置情報更新をサーバーへ送信する。
   // extraは電車モードのETA・経路等、kind="live"の場合のみ意味を持つ(仕様書§7.1.1)。
   //
@@ -520,6 +586,23 @@ export function useCocodeSocket(sessionId: string | null, auth: SocketAuth | nul
     });
   }, []);
 
+  // sendLocationSharingUpdate は位置情報オフモードの切り替え(新設)を送信する。
+  // サーバーはこのブロードキャストを送信者自身には返さないため、自分の
+  // participants状態(メンバー一覧の自分の行のバッジ表示用)もここで楽観的に
+  // 反映する。オフにする場合はliveも自分のstateからクリアする(呼び出し元の
+  // LiveSession.tsx側でuseLiveLocationの位置もリセットされる)。
+  const sendLocationSharingUpdate = useCallback((sharing: boolean) => {
+    send({ type: "location_sharing_update", sharing });
+    setState((s) => {
+      if (!s.selfParticipantId) return s;
+      const existing = s.participants.get(s.selfParticipantId);
+      if (!existing) return s;
+      const participants = new Map(s.participants);
+      participants.set(s.selfParticipantId, { ...existing, locationSharing: sharing, live: sharing ? existing.live : null });
+      return { ...s, participants };
+    });
+  }, []);
+
   // sendProfileUpdate は共有中の表示名・アイコン変更を送信する(仕様書§14.5)。
   //
   // sendTransportUpdate/sendLocationUpdate(kind="target")と同様、サーバーは
@@ -552,5 +635,5 @@ export function useCocodeSocket(sessionId: string | null, auth: SocketAuth | nul
     }
   }, []);
 
-  return { ...state, sendLocationUpdate, sendTransportUpdate, sendProfileUpdate, sendExpression, disconnect };
+  return { ...state, sendLocationUpdate, sendTransportUpdate, sendLocationSharingUpdate, sendProfileUpdate, sendExpression, disconnect, leave };
 }

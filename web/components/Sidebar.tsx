@@ -1,5 +1,7 @@
 "use client";
 
+import { Drawer, ListBox } from "@heroui/react";
+import { BookOpen, Coffee, ExternalLink, FileText, HelpCircle, Info, ClipboardList, Lock, Megaphone, ShieldCheck } from "lucide-react";
 import { BUY_ME_A_COFFEE_URL } from "@/lib/config";
 
 export type SidebarModalKind = "about" | "how" | "privacy" | "security" | "ads";
@@ -16,98 +18,77 @@ interface SidebarProps {
 // (よくある質問/プライバシーポリシー/利用規約)を1つのメニューにまとめる。
 // フィードバックはここではなく、共有終了(SessionEndedScreen)・退出
 // (GuestLeftScreen)の各画面に置く(2026-08-31改訂、体験の直後に案内するため)。
+//
+// 2026-09-02改訂: HeroUIのDrawer/ListBoxへ置き換え。
 export function Sidebar({ open, onClose, onOpenModal }: SidebarProps) {
-  if (!open) return null;
-
   return (
-    <>
-      <div className="cocode-sidebar-backdrop" onClick={onClose} />
-      <nav className="cocode-sidebar" aria-label="メニュー">
-        <div className="cocode-sidebar-header">
-          <img src="/brand/logo.png" alt="" style={{ height: 24 }} />
-          <span className="cocode-brand" style={{ fontSize: 16 }}>
-            cocode
-          </span>
-          <button className="cocode-sidebar-close" onClick={onClose} aria-label="閉じる">
-            ✕
-          </button>
-        </div>
+    <Drawer isOpen={open} onOpenChange={(v) => !v && onClose()}>
+      <Drawer.Backdrop>
+        <Drawer.Content placement="left">
+          <Drawer.Dialog aria-label="メニュー" className="flex w-75 max-w-[84vw] flex-col gap-1 p-3.5">
+            <Drawer.Header className="flex items-center gap-2.5 px-2.5 pb-3">
+              <img src="/brand/logo.png" alt="" className="h-6 w-auto" />
+              <Drawer.Heading className="text-base font-bold">cocode</Drawer.Heading>
+              <Drawer.CloseTrigger className="ml-auto" />
+            </Drawer.Header>
 
-        <button className="cocode-sidebar-item" onClick={() => onOpenModal("about")}>
-          <span className="cocode-sidebar-item-icon" aria-hidden>
-            ℹ️
-          </span>
-          サービスについて
-        </button>
-        <button className="cocode-sidebar-item" onClick={() => onOpenModal("how")}>
-          <span className="cocode-sidebar-item-icon" aria-hidden>
-            📖
-          </span>
-          使い方
-        </button>
-        <button className="cocode-sidebar-item" onClick={() => onOpenModal("privacy")}>
-          <span className="cocode-sidebar-item-icon" aria-hidden>
-            🔒
-          </span>
-          プライバシーと安全性
-        </button>
-        <button className="cocode-sidebar-item" onClick={() => onOpenModal("security")}>
-          <span className="cocode-sidebar-item-icon" aria-hidden>
-            🛡️
-          </span>
-          安心のセキュリティ
-        </button>
+            <ListBox aria-label="メニュー項目" selectionMode="none" className="flex flex-col gap-1 border-none p-0">
+              <ListBox.Item id="about" onAction={() => onOpenModal("about")} className="gap-3">
+                <Info size={18} aria-hidden />
+                サービスについて
+              </ListBox.Item>
+              <ListBox.Item id="how" onAction={() => onOpenModal("how")} className="gap-3">
+                <BookOpen size={18} aria-hidden />
+                使い方
+              </ListBox.Item>
+              <ListBox.Item id="privacy" onAction={() => onOpenModal("privacy")} className="gap-3">
+                <Lock size={18} aria-hidden />
+                プライバシーと安全性
+              </ListBox.Item>
+              <ListBox.Item id="security" onAction={() => onOpenModal("security")} className="gap-3">
+                <ShieldCheck size={18} aria-hidden />
+                安心のセキュリティ
+              </ListBox.Item>
+            </ListBox>
 
-        <hr className="cocode-sidebar-divider" />
+            <hr className="my-2 border-border" />
 
-        <a className="cocode-sidebar-item" href="/faq" target="_blank" rel="noreferrer">
-          <span className="cocode-sidebar-item-icon" aria-hidden>
-            ❓
-          </span>
-          よくある質問
-          <span className="cocode-sidebar-item-external" aria-hidden>
-            ↗
-          </span>
-        </a>
-        <a className="cocode-sidebar-item" href="/privacy" target="_blank" rel="noreferrer">
-          <span className="cocode-sidebar-item-icon" aria-hidden>
-            📄
-          </span>
-          プライバシーポリシー
-          <span className="cocode-sidebar-item-external" aria-hidden>
-            ↗
-          </span>
-        </a>
-        <a className="cocode-sidebar-item" href="/terms" target="_blank" rel="noreferrer">
-          <span className="cocode-sidebar-item-icon" aria-hidden>
-            📋
-          </span>
-          利用規約
-          <span className="cocode-sidebar-item-external" aria-hidden>
-            ↗
-          </span>
-        </a>
+            <ListBox aria-label="関連ページ" selectionMode="none" className="flex flex-col gap-1 border-none p-0">
+              <ListBox.Item href="/faq" target="_blank" rel="noreferrer" className="gap-3">
+                <HelpCircle size={18} aria-hidden />
+                よくある質問
+                <ExternalLink size={13} className="ml-auto text-muted" aria-hidden />
+              </ListBox.Item>
+              <ListBox.Item href="/privacy" target="_blank" rel="noreferrer" className="gap-3">
+                <FileText size={18} aria-hidden />
+                プライバシーポリシー
+                <ExternalLink size={13} className="ml-auto text-muted" aria-hidden />
+              </ListBox.Item>
+              <ListBox.Item href="/terms" target="_blank" rel="noreferrer" className="gap-3">
+                <ClipboardList size={18} aria-hidden />
+                利用規約
+                <ExternalLink size={13} className="ml-auto text-muted" aria-hidden />
+              </ListBox.Item>
+            </ListBox>
 
-        <hr className="cocode-sidebar-divider" />
+            <hr className="my-2 border-border" />
 
-        <button className="cocode-sidebar-item" onClick={() => onOpenModal("ads")}>
-          <span className="cocode-sidebar-item-icon" aria-hidden>
-            📢
-          </span>
-          広告について
-        </button>
-        {BUY_ME_A_COFFEE_URL && (
-          <a className="cocode-sidebar-item" href={BUY_ME_A_COFFEE_URL} target="_blank" rel="noreferrer">
-            <span className="cocode-sidebar-item-icon" aria-hidden>
-              ☕
-            </span>
-            開発者を応援する
-            <span className="cocode-sidebar-item-external" aria-hidden>
-              ↗
-            </span>
-          </a>
-        )}
-      </nav>
-    </>
+            <ListBox aria-label="その他" selectionMode="none" className="flex flex-col gap-1 border-none p-0">
+              <ListBox.Item id="ads" onAction={() => onOpenModal("ads")} className="gap-3">
+                <Megaphone size={18} aria-hidden />
+                広告について
+              </ListBox.Item>
+              {BUY_ME_A_COFFEE_URL && (
+                <ListBox.Item href={BUY_ME_A_COFFEE_URL} target="_blank" rel="noreferrer" className="gap-3">
+                  <Coffee size={18} aria-hidden />
+                  開発者を応援する
+                  <ExternalLink size={13} className="ml-auto text-muted" aria-hidden />
+                </ListBox.Item>
+              )}
+            </ListBox>
+          </Drawer.Dialog>
+        </Drawer.Content>
+      </Drawer.Backdrop>
+    </Drawer>
   );
 }

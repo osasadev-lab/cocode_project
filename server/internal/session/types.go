@@ -68,6 +68,9 @@ type Participant struct {
 	ETASeconds    *int
 	ArrivedAt     *time.Time
 	JoinedAt      time.Time
+	// LocationSharing: 位置情報オフモード(新設)。falseの間はLiveが更新されず、
+	// 他参加者へも配信されない。参加時点の既定値はtrue(共有する)。
+	LocationSharing bool
 }
 
 // RoleForToken は与えられたトークンがホスト/ゲストどちらのものかを判定する。

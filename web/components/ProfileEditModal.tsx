@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { Button, FieldError, Input, Label, Modal, TextField } from "@heroui/react";
+import { Pencil } from "lucide-react";
 import { AvatarPicker } from "./AvatarPicker";
 
 interface ProfileEditModalProps {
@@ -30,34 +32,40 @@ export function ProfileEditModal({ currentDisplayName, currentAvatarIcon, onClos
   }
 
   return (
-    <div className="cocode-modal-backdrop" onClick={onClose}>
-      <div className="cocode-glass cocode-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="cocode-modal-icon">✏️</div>
-        <p className="cocode-modal-title">プロフィールを編集</p>
+    <Modal isOpen onOpenChange={(open) => !open && onClose()}>
+      <Modal.Backdrop>
+        <Modal.Container size="sm">
+          <Modal.Dialog className="flex flex-col gap-3.5 p-7 text-center">
+            <Modal.Icon>
+              <Pencil />
+            </Modal.Icon>
+            <Modal.Heading className="text-lg font-bold">プロフィールを編集</Modal.Heading>
 
-        <label className="cocode-hint" htmlFor="cocode-profile-display-name">
-          表示名(20文字以内)
-        </label>
-        <input
-          id="cocode-profile-display-name"
-          type="text"
-          value={displayName}
-          onChange={(e) => setDisplayName(e.target.value.slice(0, 20))}
-          placeholder="例: たろう"
-          className="cocode-text-input"
-        />
-        <label className="cocode-hint">アイコン</label>
-        <AvatarPicker value={avatarIcon} onChange={setAvatarIcon} />
+            <TextField
+              value={displayName}
+              onChange={(v) => setDisplayName(v.slice(0, 20))}
+              isInvalid={!!validationError}
+              className="flex flex-col gap-1.5 text-left"
+            >
+              <Label>表示名(20文字以内)</Label>
+              <Input placeholder="例: たろう" />
+              {validationError && <FieldError>{validationError}</FieldError>}
+            </TextField>
 
-        {validationError && <p className="cocode-error">{validationError}</p>}
+            <div className="flex flex-col gap-1.5 text-left">
+              <Label>アイコン</Label>
+              <AvatarPicker value={avatarIcon} onChange={setAvatarIcon} />
+            </div>
 
-        <button className="cocode-btn cocode-btn-primary" onClick={save}>
-          保存する
-        </button>
-        <button className="cocode-btn cocode-btn-secondary" onClick={onClose}>
-          キャンセル
-        </button>
-      </div>
-    </div>
+            <Button variant="primary" fullWidth onPress={save}>
+              保存する
+            </Button>
+            <Button variant="outline" fullWidth onPress={onClose}>
+              キャンセル
+            </Button>
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
+    </Modal>
   );
 }

@@ -34,6 +34,9 @@ type Mode =
       newProfile?: { displayName: string; avatarIcon: string };
       shareUrl?: string;
       initialTransportMode?: TransportMode;
+      /** 参加直後の位置情報オフモード(2026-09-02新設)。省略時はtrue(共有する)
+       * として扱う(LiveSession側の既定値)。 */
+      initialLocationSharing?: boolean;
       // 退出後に同じ招待リンクを再訪したゲストを、localStorageの再訪識別ID
       // (guest identity)経由でparticipantId付き再接続させている場合にtrue
       // (不具合修正§6、2026-08-31新設)。このIDが既にサーバー側で失効していた
@@ -41,18 +44,28 @@ type Mode =
       viaGuestIdentity?: boolean;
     };
 
-// sessionUrl は、セッション参加用の URL（?s=<id>&t=<token>）を組み立てる。
+// sessionUrl は、ゲスト参加用の URL（?s=<id>&t=<token>）を組み立てる。
 //
 // cocode は静的 HTML として書き出される（next.config.js の output: "export"）ため、
 // 動的な /s/[id] ルートは存在しない。代わりにこの単一ページが、URL の
 // クエリ文字列から自分の役割を判断する（仕様書§3のルーティング注記, §5.1, §10-2）。
-// クエリ文字列なしの素の URL はホスト用トップページ/待ち合わせ地点を選ぶ画面であり、
-// ホスト・ゲストいずれもライブ共有中は必ず `?s=<id>&t=<token>` 形式の URL を見る。
-// ホスト自身のトークンは、招待リンク（ゲストのトークンを含む）とは別の
-// 個人用 URL を形成する。localStorage から再開したセッションは、
-// 表示内容と URL が常に一致するよう replaceState でアドレスバーを書き換える。
+// クエリ文字列なしの素の URL はホスト用トップページ/待ち合わせ地点を選ぶ画面。
 function sessionUrl(sessionId: string, token: string): string {
   return `/?s=${encodeURIComponent(sessionId)}&t=${encodeURIComponent(token)}`;
+}
+
+// hostSessionUrl は、ホスト自身のライブ画面用の URL を組み立てる（2026-09-02新設）。
+//
+// 以前はホストの画面でも sessionUrl(sessionId, tokenHost) をアドレスバーへ
+// replaceState していたが、これは招待リンク（?s=..&t=<tokenGuest>）と全く
+// 同じ見た目でありながら tokenHost（セッション終了・目的地変更まで可能な
+// ホスト権限そのもの）を含んでいた。ホストが誤ってアドレスバーの URL を
+// コピーして送ってしまうと、招待リンクのつもりが実質的な「共同ホスト権限の
+// 譲渡」になってしまう不具合があったため、ホストの画面では t を一切
+// 出さないことにした。s のみで実害はない（下記 useLayoutEffect が示す通り、
+// リロード時の復元は localStorage の token を使い、URL の t は使わないため）。
+function hostSessionUrl(sessionId: string): string {
+  return `/?s=${encodeURIComponent(sessionId)}`;
 }
 
 // Page: cocode のトップレベルページ。URL とローカル保存されたセッションから
@@ -76,11 +89,13 @@ export default function Page() {
     const t = params.get("t");
     const stored = loadSession();
 
-    // URL にセッション情報（s, t）があれば、ゲスト（または招待URLを踏んだ
-    // ホスト本人）としてアクセスしている。同一セッションへの参加履歴
-    // （participantId）が localStorage にあれば自動復帰、無ければ
-    // ゲスト用トップページ(初回参加、§14.2)を経由させる。
-    if (s && t) {
+    // URL に s があれば、ゲスト（または招待/自分のURLを踏んだホスト本人）
+    // としてアクセスしている。同一セッションへの参加履歴（participantId）が
+    // localStorage にあれば、URL に t があるか（≒招待リンクか、tを含まない
+    // ホスト自身のURL(hostSessionUrl)か）を問わず自動復帰する — 復帰には
+    // 常に localStorage 側の token（stored.token）を使い、URL の t は
+    // 参照しないため、これで復元結果が変わることはない。
+    if (s) {
       if (stored && stored.sessionId === s && stored.participantId) {
         setMode({
           kind: "session",
@@ -91,18 +106,24 @@ export default function Page() {
         });
         return;
       }
-      // アクティブセッション（上記stored）は「退出する」操作でクリアされるが、
-      // ゲストの再訪識別ID（guest identity）は別枠で残り続ける(不具合修正§6、
-      // 2026-08-31新設)。これにより、一度退出したゲストが同じ招待リンクを
-      // 再度開いても、サーバー側に新しい参加者レコードを作らせず(=参加人数の
-      // 増殖・地図上の同一人物の重複マーカーを防ぎ)、既存の自分として再接続できる。
-      const guestParticipantId = loadGuestIdentity(s);
-      if (guestParticipantId) {
-        setMode({ kind: "session", sessionId: s, token: t, participantId: guestParticipantId, viaGuestIdentity: true });
+      if (t) {
+        // アクティブセッション（上記stored）は「退出する」操作でクリアされるが、
+        // ゲストの再訪識別ID（guest identity）は別枠で残り続ける(不具合修正§6、
+        // 2026-08-31新設)。これにより、一度退出したゲストが同じ招待リンクを
+        // 再度開いても、サーバー側に新しい参加者レコードを作らせず(=参加人数の
+        // 増殖・地図上の同一人物の重複マーカーを防ぎ)、既存の自分として再接続できる。
+        const guestParticipantId = loadGuestIdentity(s);
+        if (guestParticipantId) {
+          setMode({ kind: "session", sessionId: s, token: t, participantId: guestParticipantId, viaGuestIdentity: true });
+          return;
+        }
+        setMode({ kind: "guest-landing", sessionId: s, token: t });
         return;
       }
-      setMode({ kind: "guest-landing", sessionId: s, token: t });
-      return;
+      // s のみ・tなし・localStorageにも一致するセッション無し: hostSessionUrlを
+      // 誰かがブックマーク等から開いたが、この端末には参加情報が無いケース。
+      // tが無い以上ゲストとして参加させることもできないため、下の通常判定へ
+      // フォールスルーする（＝ホスト用トップページ等、素の"/"と同じ扱い）。
     }
 
     // URL には無いが localStorage に保存済み（かつ未失効）のセッションがあれば、
@@ -123,14 +144,22 @@ export default function Page() {
   if (mode.kind === "create") {
     return (
       <CreateForm
-        onCreated={(sessionId, token, participantId, shareUrl, transportMode, expiresAt) => {
-          window.history.replaceState(null, "", sessionUrl(sessionId, token));
+        onCreated={(sessionId, token, participantId, shareUrl, transportMode, expiresAt, locationSharing) => {
+          window.history.replaceState(null, "", hostSessionUrl(sessionId));
           // 作成直後は中間画面を挟まずそのままライブ地図へ入る(RoomCreatedScreen
           // は廃止、フッターの「リンク共有」で招待URL・QRコードは十分に賄える、
           // 2026-08-31)。ここでlocalStorageに保存しておくことで、この直後に
           // リロードされてもresume-choice経由でライブ地図へ正しく復帰できる。
           saveSession({ sessionId, token, participantId, role: "host", expiresAt, shareUrl });
-          setMode({ kind: "session", sessionId, token, participantId, shareUrl, initialTransportMode: transportMode });
+          setMode({
+            kind: "session",
+            sessionId,
+            token,
+            participantId,
+            shareUrl,
+            initialTransportMode: transportMode,
+            initialLocationSharing: locationSharing,
+          });
         }}
         onCancel={() => setMode({ kind: "landing" })}
       />
@@ -143,7 +172,14 @@ export default function Page() {
       <ResumeSessionChoice
         stored={stored}
         onResume={() => {
-          window.history.replaceState(null, "", sessionUrl(stored.sessionId, stored.token));
+          // ホストはtokenHostをアドレスバーに出さない(hostSessionUrl参照)。
+          // ゲストは招待URLと同じ形の?s=..&t=<tokenGuest>のままでよい
+          // (もともとその招待URL自体が既に共有済みで、新たな露出面ではないため)。
+          window.history.replaceState(
+            null,
+            "",
+            stored.role === "host" ? hostSessionUrl(stored.sessionId) : sessionUrl(stored.sessionId, stored.token)
+          );
           setMode({
             kind: "session",
             sessionId: stored.sessionId,
@@ -165,17 +201,18 @@ export default function Page() {
       <LandingGuest
         sessionId={mode.sessionId}
         token={mode.token}
-        onJoin={(displayName, avatarIcon, transportMode) => {
-          // 移動手段は参加登録(WebSocket接続)より前、LandingGuest側の
-          // 経路プレビューステップで確定済み(2026-08-31再改訂: 参加確定前に
-          // 「参加済み」扱いになってしまう不具合があったため、WS接続自体を
-          // 最終確認ボタンまで遅延させた)。
+        onJoin={(displayName, avatarIcon, transportMode, locationSharing) => {
+          // 移動手段・位置情報共有の可否は参加登録(WebSocket接続)より前、
+          // LandingGuest側の経路プレビューステップで確定済み(2026-08-31再改訂:
+          // 参加確定前に「参加済み」扱いになってしまう不具合があったため、WS
+          // 接続自体を最終確認ボタンまで遅延させた)。
           setMode({
             kind: "session",
             sessionId: mode.sessionId,
             token: mode.token,
             newProfile: { displayName, avatarIcon },
             initialTransportMode: transportMode,
+            initialLocationSharing: locationSharing,
           });
         }}
       />
@@ -190,7 +227,15 @@ export default function Page() {
       newProfile={mode.newProfile}
       shareUrl={mode.shareUrl}
       initialTransportMode={mode.initialTransportMode}
+      initialLocationSharing={mode.initialLocationSharing}
       announceRejoin={mode.viaGuestIdentity}
+      onTokensRotated={(newToken, newShareUrl) => {
+        // トークン再発行(2026-09-02新設)。ホスト専用機能のため、アドレスバーは
+        // 常にhostSessionUrl形式へ書き戻す(このコールバックはisHost時のみ
+        // LiveSession側から呼ばれる)。
+        window.history.replaceState(null, "", hostSessionUrl(mode.sessionId));
+        setMode((m) => (m.kind === "session" ? { ...m, token: newToken, shareUrl: newShareUrl } : m));
+      }}
       onLeft={() => {
         window.history.replaceState(null, "", "/");
         setMode({ kind: "landing" });

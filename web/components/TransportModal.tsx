@@ -1,5 +1,6 @@
 "use client";
 
+import { Modal, Button } from "@heroui/react";
 import { TransportPicker } from "./TransportPicker";
 import { useTransportEtaOptions, type TrainRouteInfo } from "@/lib/useTransportEtaOptions";
 import type { LocationState, TransportMode } from "@/lib/types";
@@ -31,17 +32,28 @@ export function TransportModal({ currentMode, myLive, target, onClose, onSelect 
   }
 
   return (
-    <div className="cocode-modal-backdrop" onClick={onClose}>
-      <div className="cocode-glass cocode-modal" onClick={(e) => e.stopPropagation()}>
-        <p className="cocode-modal-title">移動手段を選択</p>
-        {(!myLive || !target) && (
-          <p className="cocode-hint">現在地または目的地が不明なため、所要時間は計算されません。</p>
-        )}
-        <TransportPicker value={currentMode} onChange={selectMode} etaByMode={etaByMode} />
-        <button className="cocode-btn cocode-btn-secondary" onClick={onClose}>
-          閉じる
-        </button>
-      </div>
-    </div>
+    <Modal isOpen onOpenChange={(open) => !open && onClose()}>
+      <Modal.Backdrop>
+        <Modal.Container>
+          <Modal.Dialog>
+            <Modal.Header>
+              <Modal.Heading>移動手段を選択</Modal.Heading>
+            </Modal.Header>
+            <Modal.Body className="flex flex-col gap-4">
+              {(!myLive || !target) && (
+                <p className="text-sm text-muted">現在地または目的地が不明なため、所要時間は計算されません。</p>
+              )}
+              <TransportPicker value={currentMode} onChange={selectMode} etaByMode={etaByMode} />
+            </Modal.Body>
+            <Modal.Footer>
+              <Button variant="outline" onPress={onClose}>
+                閉じる
+              </Button>
+            </Modal.Footer>
+            <Modal.CloseTrigger />
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
+    </Modal>
   );
 }

@@ -30,7 +30,15 @@ function toGeoError(err: GeolocationPositionError): GeoError {
   }
 }
 
-/** 「現在地を使う」ボタン用に、現在位置を1回だけ取得する。 */
+/** 「現在地を使う」ボタン用に、現在位置を1回だけ取得する。
+ *
+ * enableHighAccuracy: false(2026-09-02改訂、「現在地の取得が遅い」という指摘の
+ * 対応): trueにするとブラウザがGPSチップでの測位を試み、特に屋内では
+ * 測位に数秒〜十数秒かかることがある。この用途(待ち合わせ地点の目印として
+ * 大まかな現在地を置く。その後の地図タップで微調整可能)では数十m程度の
+ * 誤差は許容できるため、Wi-Fi/基地局ベースの高速な測位で十分と判断した。
+ * maximumAge: 30秒以内に取得済みの位置があればそれを即座に再利用し、
+ * 新規測位を待たせない(以前は0=常に新規測位必須にしていた)。 */
 export function getCurrentPosition(): Promise<GeoPoint> {
   return new Promise((resolve, reject) => {
     if (!("geolocation" in navigator)) {
@@ -45,7 +53,7 @@ export function getCurrentPosition(): Promise<GeoPoint> {
           accuracy: pos.coords.accuracy,
         }),
       (err) => reject(toGeoError(err)),
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      { enableHighAccuracy: false, timeout: 8000, maximumAge: 30000 }
     );
   });
 }
@@ -71,14 +79,31 @@ export function haversineMeters(a: { lat: number; lng: number }, b: { lat: numbe
  * 新しい値を反映しないようスロットリングしており、これがバッテリー消費と
  * WebSocket の通信量を抑えるための調整点になっている。
  */
-export function useLiveLocation(enabled: boolean) {
+export function useLiveLocation(
+  enabled: boolean,
+  /** highAccuracy: 既定true(実際のライブ位置共有画面はGPS精度を優先する、
+   * 従来通りの挙動)。false指定時はenableHighAccuracyをオフにし、初回の
+   * 位置取得を優先する(2026-09-02新設、「現在地の取得が遅い」の指摘対応)。
+   * 目的地確認画面(CreateForm/LandingGuestの経路プレビュー)のように、
+   * 現在地表示・ETA計算の目的では数十m程度の誤差より応答速度を優先したい
+   * 場合に使う。 */
+  highAccuracy = true
+) {
   const [point, setPoint] = useState<GeoPoint | null>(null);
   const [error, setError] = useState<GeoError | null>(null);
   // 直近で採用（＝呼び出し元に反映）した位置と、その時刻を保持する。
   const lastSent = useRef<{ point: GeoPoint; at: number } | null>(null);
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled) {
+      // オフに切り替えた瞬間、直前の位置を持ち越さない(2026-09-02新設、
+      // 位置情報オフモード)。監視を止めるだけだと直前の値が残り続け、
+      // 呼び出し元(LiveSession.tsx)がそれを「まだ共有中」として扱ってしまう。
+      lastSent.current = null;
+      setPoint(null);
+      setError(null);
+      return;
+    }
     if (!("geolocation" in navigator)) {
       setError({ code: "unsupported", message: "このブラウザは位置情報の取得に対応していません" });
       return;
@@ -105,12 +130,12 @@ export function useLiveLocation(enabled: boolean) {
         }
       },
       (err) => setError(toGeoError(err)),
-      { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
+      { enableHighAccuracy: highAccuracy, maximumAge: 5000, timeout: highAccuracy ? 15000 : 8000 }
     );
 
     // クリーンアップ: 監視を停止する。
     return () => navigator.geolocation.clearWatch(watchId);
-  }, [enabled]);
+  }, [enabled, highAccuracy]);
 
   return { point, error };
 }

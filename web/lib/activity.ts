@@ -1,13 +1,15 @@
+import { DoorOpen, Flag, LogOut, MessageCircle, type LucideIcon } from "lucide-react";
 import type { ActivityEntry } from "./types";
 
 // アクティビティログ(参加/退出/到着/ひとことメッセージ)の表示用ヘルパー。
 // MemberSidebar(旧仕様、現在は不使用)とChatSidebar(2026-08-31新設)で
-// 共通の見た目にするため切り出した。
-export const ACTIVITY_ICON: Record<ActivityEntry["kind"], string> = {
-  joined: "🚪",
-  left: "👋",
-  arrived: "🏁",
-  message: "💬",
+// 共通の見た目にするため切り出した。2026-09-02改訂: 絵文字グリフから
+// lucide-reactのアイコンコンポーネントへ変更(UI刷新、絵文字廃止)。
+export const ACTIVITY_ICON: Record<ActivityEntry["kind"], LucideIcon> = {
+  joined: DoorOpen,
+  left: LogOut,
+  arrived: Flag,
+  message: MessageCircle,
 };
 
 export function activityText(entry: ActivityEntry): string {

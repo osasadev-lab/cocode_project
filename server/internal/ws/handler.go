@@ -96,18 +96,22 @@ type destinationPayload struct {
 // （仕様書§5.4）。Live/ETASeconds は未設定時 JSON 上で null を明示するため
 // omitempty を付けない。
 type participantPublic struct {
-	ID            string                 `json:"id"`
-	Role          session.Role           `json:"role"`
-	DisplayName   string                 `json:"displayName"`
-	AvatarIcon    string                 `json:"avatarIcon"`
-	TransportMode session.TransportMode  `json:"transportMode"`
-	Live          *session.LocationState `json:"live"`
-	ETASeconds    *int                   `json:"etaSeconds"`
-	Arrived       bool                   `json:"arrived"`
+	ID              string                 `json:"id"`
+	Role            session.Role           `json:"role"`
+	DisplayName     string                 `json:"displayName"`
+	AvatarIcon      string                 `json:"avatarIcon"`
+	TransportMode   session.TransportMode  `json:"transportMode"`
+	Live            *session.LocationState `json:"live"`
+	ETASeconds      *int                   `json:"etaSeconds"`
+	Arrived         bool                   `json:"arrived"`
+	LocationSharing bool                   `json:"locationSharing"`
 }
 
 // syncPayload は Join 成功直後に送られる初回の "sync" フレームで、
 // クライアントへセッションの現在の完全な状態を渡す。
+// ActivityLog(新設): room が保持する直近のチャットログ（参加/退出/到着/
+// ひとことメッセージ）を、参加・再接続のたびに含めて配信する。これにより
+// リロード後もチャット履歴が失われない（p7残課題の対応）。
 type syncPayload struct {
 	Type          string              `json:"type"`
 	Role          session.Role        `json:"role"`
@@ -115,6 +119,7 @@ type syncPayload struct {
 	Destination   destinationPayload  `json:"destination"`
 	ExpiresAt     time.Time           `json:"expiresAt"`
 	Participants  []participantPublic `json:"participants"`
+	ActivityLog   []hub.ActivityEntry `json:"activityLog"`
 }
 
 // inboundMsg は認証後にクライアントからサーバーへ送られるフレームの形式
@@ -136,6 +141,7 @@ type inboundMsg struct {
 	RoutePolyline string          `json:"routePolyline"` // location_update(kind=live, 電車モード) 用
 	RouteSteps    json.RawMessage `json:"routeSteps"`    // location_update(kind=live, 電車モード) 用
 	Text          string          `json:"text"`          // expression(kind=stamp) 用
+	Sharing       *bool           `json:"sharing"`       // location_sharing_update 用(新設)
 }
 
 // serve は /ws への接続1本ぶんの処理全体を担う。
@@ -164,7 +170,7 @@ func (h *Handler) serve(c *gin.Context) {
 	_ = wsConn.SetReadDeadline(time.Time{})
 
 	ctx := context.Background()
-	rec, self, all, err := h.hub.Join(ctx, auth.SessionID, auth.Token, auth.ParticipantID, auth.DisplayName, auth.AvatarIcon, auth.AnnounceRejoin, conn)
+	rec, self, all, activity, err := h.hub.Join(ctx, auth.SessionID, auth.Token, auth.ParticipantID, auth.DisplayName, auth.AvatarIcon, auth.AnnounceRejoin, conn)
 	if err != nil {
 		_ = conn.Send(map[string]string{"type": "error", "message": joinErrorMessage(err)})
 		return
@@ -187,6 +193,7 @@ func (h *Handler) serve(c *gin.Context) {
 		},
 		ExpiresAt:    rec.ExpiresAt,
 		Participants: participants,
+		ActivityLog:  activity,
 	}); err != nil {
 		h.hub.Disconnect(auth.SessionID, self.ID, conn)
 		return
@@ -229,7 +236,7 @@ func (h *Handler) serve(c *gin.Context) {
 			}
 		case "transport_update":
 			if err := h.hub.UpdateTransport(ctx, auth.SessionID, self.ID, session.TransportMode(msg.TransportMode), msg.ETASeconds); err != nil {
-				_ = conn.Send(map[string]string{"type": "error", "message": "invalid transportMode"})
+				_ = conn.Send(map[string]string{"type": "error", "message": "移動手段の指定が正しくありません"})
 			}
 		case "profile_update":
 			if err := h.hub.UpdateProfile(ctx, auth.SessionID, self.ID, msg.DisplayName, msg.AvatarIcon); err != nil {
@@ -238,6 +245,22 @@ func (h *Handler) serve(c *gin.Context) {
 		case "expression":
 			if err := h.hub.SendExpression(auth.SessionID, self.ID, msg.Kind, msg.Text); err != nil {
 				_ = conn.Send(map[string]string{"type": "error", "message": expressionErrorMessage(err)})
+			}
+		case "location_sharing_update":
+			if msg.Sharing == nil {
+				_ = conn.Send(map[string]string{"type": "error", "message": "位置情報共有の指定が正しくありません"})
+				break
+			}
+			if err := h.hub.UpdateLocationSharing(ctx, auth.SessionID, self.ID, *msg.Sharing); err != nil {
+				_ = conn.Send(map[string]string{"type": "error", "message": "位置情報共有の切り替えに失敗しました"})
+			}
+		case "leave":
+			// ゲストの明示的な「退出する」操作（仕様書§14.3ステップ12、新設）。
+			// 復帰猶予を待たず即座に恒久退出として扱う（hub.Leave参照）。
+			// クライアントはこの直後に自らWebSocketを閉じる想定だが、閉じ忘れても
+			// 実害はない（続くDisconnectは参加者が既に消えているため無視される）。
+			if err := h.hub.Leave(ctx, auth.SessionID, self.ID); err != nil {
+				_ = conn.Send(map[string]string{"type": "error", "message": "退出処理に失敗しました"})
 			}
 		default:
 			// 未知の type は無視する。
@@ -252,11 +275,11 @@ func (h *Handler) serve(c *gin.Context) {
 func joinErrorMessage(err error) string {
 	switch {
 	case errors.Is(err, session.ErrParticipantLimit):
-		return "session is full"
+		return "参加人数が上限に達しています"
 	case errors.Is(err, session.ErrForbidden):
-		return "displayName and avatarIcon are required and must be valid"
+		return "表示名・アイコンの指定が正しくありません"
 	default:
-		return "session not found or expired"
+		return "セッションが見つからないか、既に終了しています"
 	}
 }
 
@@ -265,11 +288,11 @@ func joinErrorMessage(err error) string {
 func profileUpdateErrorMessage(err error) string {
 	switch {
 	case errors.Is(err, session.ErrRateLimited):
-		return "profile updates are limited to once every 5 seconds"
+		return "表示名・アイコンの変更は5秒に1回までです"
 	case errors.Is(err, session.ErrForbidden):
-		return "displayName and avatarIcon are invalid"
+		return "表示名・アイコンの指定が正しくありません"
 	default:
-		return "failed to update profile"
+		return "プロフィールの更新に失敗しました"
 	}
 }
 
@@ -278,24 +301,25 @@ func profileUpdateErrorMessage(err error) string {
 func expressionErrorMessage(err error) string {
 	switch {
 	case errors.Is(err, session.ErrRateLimited):
-		return "expressions are limited to once every 3 seconds"
+		return "スタンプ・リアクションの送信は3秒に1回までです"
 	case errors.Is(err, session.ErrForbidden):
-		return "invalid expression"
+		return "スタンプ・リアクションの指定が正しくありません"
 	default:
-		return "failed to send expression"
+		return "スタンプ・リアクションの送信に失敗しました"
 	}
 }
 
 // toParticipantPublic は session.Participant を sync フレーム用の公開表現に変換する。
 func toParticipantPublic(p *session.Participant) participantPublic {
 	return participantPublic{
-		ID:            p.ID,
-		Role:          p.Role,
-		DisplayName:   p.DisplayName,
-		AvatarIcon:    p.AvatarIcon,
-		TransportMode: p.TransportMode,
-		Live:          p.Live,
-		ETASeconds:    p.ETASeconds,
-		Arrived:       p.ArrivedAt != nil,
+		ID:              p.ID,
+		Role:            p.Role,
+		DisplayName:     p.DisplayName,
+		AvatarIcon:      p.AvatarIcon,
+		TransportMode:   p.TransportMode,
+		Live:            p.Live,
+		ETASeconds:      p.ETASeconds,
+		Arrived:         p.ArrivedAt != nil,
+		LocationSharing: p.LocationSharing,
 	}
 }

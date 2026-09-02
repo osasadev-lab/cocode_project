@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -33,14 +34,35 @@ type Conn interface {
 
 // イベント種別の文字列定数（仕様書§5.4）。
 const (
-	EventPeerLocation       = "peer_location"
-	EventParticipantJoined  = "participant_joined"
-	EventParticipantLeft    = "participant_left"
-	EventParticipantUpdated = "participant_updated"
-	EventParticipantArrived = "participant_arrived"
-	EventSessionEnded       = "session_ended"
-	EventSessionExpired     = "session_expired"
+	EventPeerLocation        = "peer_location"
+	EventParticipantJoined   = "participant_joined"
+	EventParticipantLeft     = "participant_left"
+	EventParticipantDeparted = "participant_departed"
+	EventParticipantUpdated  = "participant_updated"
+	EventParticipantArrived  = "participant_arrived"
+	EventParticipantSharing  = "participant_sharing_updated"
+	EventSessionEnded        = "session_ended"
+	EventSessionExpired      = "session_expired"
 )
+
+// ActivityLogLimit は room が保持するチャットのアクティビティログ
+// （参加/退出/到着/ひとことメッセージ）の最大保持件数（p7残課題の対応、新設）。
+// 無制限に溜め続けるとメモリを圧迫するため、直近ぶんだけ保持する
+// （フロントエンドのACTIVITY_LOG_LIMITと同じ値）。
+const ActivityLogLimit = 30
+
+// ActivityEntry はチャット（左サイドバー、仕様書§14.5.1）に表示される
+// アクティビティログ1件ぶん。room単位でメモリ上に保持し、sync フレームに
+// 含めて配信することで、参加者がページをリロードしてもチャット履歴が
+// 失われないようにする（p7残課題「共有中にゲストがリロードすると、それまでの
+// チャットのやり取りが消える」の対応）。DBへの永続化は行わない
+// （セッションTTL=1時間の範囲内でのプロセス内メモリ保持で十分と判断）。
+type ActivityEntry struct {
+	Kind        string    `json:"kind"` // "joined" | "left" | "arrived" | "message"
+	DisplayName string    `json:"displayName"`
+	Text        string    `json:"text,omitempty"`
+	At          time.Time `json:"at"`
+}
 
 // ProfileUpdateCooldown は同一参加者からの profile_update を受け付ける最短間隔
 // （乱用対策、仕様書§14.5。§12.1のexpressionクールダウンと同じ考え方）。
@@ -118,6 +140,17 @@ type participantArrivedMsg struct {
 	ArrivedAt     time.Time `json:"arrivedAt"`
 }
 
+// participantSharingMsg は位置情報オフモードの切り替え(新設)を他参加者へ
+// 知らせるブロードキャスト。Sharing=falseの場合、受信側はこの参加者の
+// ライブ位置表示を消す(サーバー側でも同時にParticipant.Liveをnilにしている
+// ため、以後のsync/再接続でも復活しない)。
+type participantSharingMsg struct {
+	Type          string `json:"type"`
+	ParticipantID string `json:"participantId"`
+	DisplayName   string `json:"displayName"`
+	Sharing       bool   `json:"sharing"`
+}
+
 type peerExpressionMsg struct {
 	Type          string    `json:"type"`
 	ParticipantID string    `json:"participantId"`
@@ -155,7 +188,26 @@ type room struct {
 	profileCooldown    map[string]time.Time            // participantId -> 直近の profile_update 時刻（仕様書§14.5）
 	expressionCooldown map[string]time.Time            // participantId -> 直近の expression 時刻（仕様書§12.1）
 	returnTimers       map[string]*time.Timer          // participantId -> 復帰猶予タイマー（ReturnGracePeriod、新設）
+	activityLog        []ActivityEntry                 // チャットのアクティビティログ（直近ActivityLogLimit件、新設）
 	timer              *time.Timer
+}
+
+// appendActivity は room のアクティビティログに1件追加し、上限
+// （ActivityLogLimit）を超えた古いものを切り詰める。
+// 呼び出し元が r.mu を保持している状態で呼ぶこと。
+func appendActivity(r *room, kind, displayName, text string, at time.Time) {
+	r.activityLog = append(r.activityLog, ActivityEntry{Kind: kind, DisplayName: displayName, Text: text, At: at})
+	if len(r.activityLog) > ActivityLogLimit {
+		r.activityLog = r.activityLog[len(r.activityLog)-ActivityLogLimit:]
+	}
+}
+
+// snapshotActivity は room.activityLog のコピーを返す（sync フレーム用）。
+// 呼び出し元が r.mu を保持している状態で呼ぶこと。
+func snapshotActivity(r *room) []ActivityEntry {
+	out := make([]ActivityEntry, len(r.activityLog))
+	copy(out, r.activityLog)
+	return out
 }
 
 // Manager はこのプロセス上の全ての稼働中セッション（room）を所有・管理する。
@@ -189,6 +241,7 @@ func (m *Manager) newRoom(rec *session.Record, participants []*session.Participa
 		profileCooldown:    make(map[string]time.Time),
 		expressionCooldown: make(map[string]time.Time),
 		returnTimers:       make(map[string]*time.Timer),
+		activityLog:        make([]ActivityEntry, 0, ActivityLogLimit),
 		timer:              time.AfterFunc(time.Until(rec.ExpiresAt), func() { m.expire(id) }),
 	}
 }
@@ -257,11 +310,22 @@ func (m *Manager) getOrLoad(ctx context.Context, id string) (*room, error) {
 }
 
 // GetState は REST の GET /api/sessions/:id/state を支える。
-// ホストトークンなら常にホスト参加者自身の情報を返す。ゲストトークンで
+// ホストトークンで、かつ participantId がホスト自身のもの(=呼び出し元が
+// 既にlocalStorage等でホスト参加者の身元を知っている＝正規のホスト本人の
+// ブラウザである)場合のみ、ホスト参加者自身の情報を返す。ゲストトークンで
 // participantId が空の場合は self=nil を返し、参加者登録は行わない
 // （初回ゲストが開くゲスト用トップページ向けのプレビュー、仕様書§5.5・§14.2。
 // 呼び出し元は self==nil の場合、rec と len(all) のみを使い、all の個々の
 // 要素（他参加者の表示名・位置情報）はレスポンスに含めないこと）。
+//
+// ホスト側でparticipantIdの一致まで要求する理由(2026-09-02新設): ホスト自身の
+// ライブ画面のURLは、以前は招待リンクと全く同じ見た目で tokenHost を含んで
+// いたため、誤って他人に渡ってしまうと「ゲスト用プレビュー」のつもりが
+// 実際にはホスト参加者の完全な状態(他参加者全員の表示名・ライブ位置情報を
+// 含むstateResp)が丸ごと返ってしまっていた。正規のホスト本人は常に
+// localStorageに保存済みのparticipantIdを添えて呼び出すため、この一致
+// チェックにより「tokenHostだけを知っている第三者」からの呼び出しは
+// ErrNotFound(=呼び出し元は404扱い)になり、位置情報の閲覧を防げる。
 func (m *Manager) GetState(ctx context.Context, sessionID, token, participantID string) (rec *session.Record, self *session.Participant, all []*session.Participant, err error) {
 	r, err := m.getOrLoad(ctx, sessionID)
 	if err != nil {
@@ -280,7 +344,11 @@ func (m *Manager) GetState(ctx context.Context, sessionID, token, participantID 
 	allSnapshot := snapshotParticipants(r)
 
 	if role == session.RoleHost {
-		return &recCopy, hostParticipant(r), allSnapshot, nil
+		hp := hostParticipant(r)
+		if hp == nil || participantID == "" || participantID != hp.ID {
+			return nil, nil, nil, session.ErrNotFound
+		}
+		return &recCopy, hp, allSnapshot, nil
 	}
 
 	// role == session.RoleGuest
@@ -306,43 +374,52 @@ func (m *Manager) GetState(ctx context.Context, sessionID, token, participantID 
 // 一切行わない現行の設計は維持しつつ、ユーザーが明示的に再入室した場合だけ
 // participant_joined を再送し、チャットのアクティビティログに「参加しました」
 // を残せるようにする。
-func (m *Manager) Join(ctx context.Context, sessionID, token, participantID, displayName, avatarIcon string, announceRejoin bool, conn Conn) (rec *session.Record, self *session.Participant, all []*session.Participant, err error) {
+func (m *Manager) Join(ctx context.Context, sessionID, token, participantID, displayName, avatarIcon string, announceRejoin bool, conn Conn) (rec *session.Record, self *session.Participant, all []*session.Participant, activity []ActivityEntry, err error) {
 	r, err := m.getOrLoad(ctx, sessionID)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	r.mu.Lock()
 	role, ok := r.rec.RoleForToken(token)
 	if !ok {
 		r.mu.Unlock()
-		return nil, nil, nil, session.ErrNotFound
+		return nil, nil, nil, nil, session.ErrNotFound
 	}
 
 	isNewGuest := false
 	switch role {
 	case session.RoleHost:
-		self = hostParticipant(r)
-		if self == nil {
+		hp := hostParticipant(r)
+		// participantIdの一致を要求する(2026-09-02新設、GetStateと同じ理由)。
+		// ホストの接続はparticipantId単位(=hp.IDただ1つ)で管理されており、
+		// 一致チェックが無いとtokenHostだけを知っている第三者がparticipantId
+		// 未指定でJoinしても「再接続」扱いになってしまい、下のr.conns[self.ID]
+		// への上書きで正規ホストの接続を強制的に閉じて乗っ取れてしまっていた
+		// (r.conns はparticipantId単位でただ1つの接続しか保持できないため)。
+		// 正規のホスト本人は常にlocalStorage由来のparticipantIdを送るため、
+		// この変更による影響はない。
+		if hp == nil || participantID == "" || participantID != hp.ID {
 			r.mu.Unlock()
-			return nil, nil, nil, session.ErrNotFound
+			return nil, nil, nil, nil, session.ErrNotFound
 		}
+		self = hp
 	case session.RoleGuest:
 		if participantID != "" {
 			p, ok := r.participants[participantID]
 			if !ok || p.Role != session.RoleGuest {
 				r.mu.Unlock()
-				return nil, nil, nil, session.ErrNotFound
+				return nil, nil, nil, nil, session.ErrNotFound
 			}
 			self = p
 		} else {
 			if !session.ValidDisplayName(displayName) || !session.ValidAvatarIcon(avatarIcon) {
 				r.mu.Unlock()
-				return nil, nil, nil, session.ErrForbidden
+				return nil, nil, nil, nil, session.ErrForbidden
 			}
 			if len(r.participants) >= session.MaxParticipants {
 				r.mu.Unlock()
-				return nil, nil, nil, session.ErrParticipantLimit
+				return nil, nil, nil, nil, session.ErrParticipantLimit
 			}
 			r.mu.Unlock()
 			// INSERT(DB I/O)はroomのロックを持ったまま行わない。
@@ -350,7 +427,7 @@ func (m *Manager) Join(ctx context.Context, sessionID, token, participantID, dis
 			// （こちらは同時参加のごく稀な競合に対する最終防衛線）。
 			newP, insErr := m.store.InsertParticipant(ctx, sessionID, displayName, avatarIcon)
 			if insErr != nil {
-				return nil, nil, nil, insErr
+				return nil, nil, nil, nil, insErr
 			}
 			r.mu.Lock()
 			r.participants[newP.ID] = newP
@@ -370,10 +447,6 @@ func (m *Manager) Join(ctx context.Context, sessionID, token, participantID, dis
 		t.Stop()
 		delete(r.returnTimers, self.ID)
 	}
-	recCopy := *r.rec
-	allSnapshot := snapshotParticipants(r)
-	peers := otherConns(r, self.ID)
-	r.mu.Unlock()
 
 	// 新規ゲストの参加、または明示的な再入室(announceRejoin)の場合のみ
 	// 他参加者へparticipant_joinedを通知する（通常の自動再接続では通知しない、
@@ -381,6 +454,16 @@ func (m *Manager) Join(ctx context.Context, sessionID, token, participantID, dis
 	// 配信されて相手側の参加者一覧から取り除かれているため、再接続時も
 	// 同じイベント（＝再度リストへ追加させる形）を使うのが自然。
 	announceJoin := isNewGuest || (role == session.RoleGuest && announceRejoin)
+	if announceJoin {
+		appendActivity(r, "joined", self.DisplayName, "", time.Now().UTC())
+	}
+
+	recCopy := *r.rec
+	allSnapshot := snapshotParticipants(r)
+	activitySnapshotOut := snapshotActivity(r)
+	peers := otherConns(r, self.ID)
+	r.mu.Unlock()
+
 	if announceJoin {
 		msg := participantJoinedMsg{
 			Type: EventParticipantJoined,
@@ -397,23 +480,21 @@ func (m *Manager) Join(ctx context.Context, sessionID, token, participantID, dis
 		}
 	}
 
-	return &recCopy, self, allSnapshot, nil
+	return &recCopy, self, allSnapshot, activitySnapshotOut, nil
 }
 
 // Disconnect はソケットが閉じた際にコネクションをセッションから切り離す。
 //
-// ホストの切断は復帰猶予を設けず即座にセッション全体を終了する（2026-09-02
-// 改訂、ユーザー指示）。ホスト不在のまま位置共有を続ける意味は無いため。
-// タブを閉じた場合に限らず、ネットワーク瞬断などあらゆる切断が対象になる
-// （ホスト側だけ再接続で復帰させたい場合は、この早期終了より前に専用の
-// 「猶予あり切断」経路を別途設ける必要がある — 現状はユーザー指示通り
-// 即終了で統一している）。
-//
-// ゲストの切断は従来通り、参加者情報を残したまま復帰猶予タイマー
-// （ReturnGracePeriod）を起動する。他の接続中参加者全員へ participant_left
-// をブロードキャストし（不具合修正§0: v1では固定の1名にしか送っていなかった）、
-// 猶予時間内に再接続（Join）すればタイマーはキャンセルされ、しなければ
-// そのゲストのみ個別退出扱いとする（handleReturnTimeout）。
+// ホスト・ゲストいずれの切断も、参加者情報を残したまま復帰猶予タイマー
+// （ReturnGracePeriod、10分）を起動する（2026-09-02再改訂: 以前はホストの
+// 切断のみ猶予を設けず即座にteardownしていたが、ページの再読み込みも一度
+// WebSocketが切れる点では他の瞬断と区別が付かず、ホストが単にリロードした
+// だけでもセッションが即終了し再読み込み後に404相当のエラーになる不具合が
+// あったため、ゲストと全く同じ猶予方式に統一した）。他の接続中参加者全員へ
+// participant_left をブロードキャストし（不具合修正§0: v1では固定の1名に
+// しか送っていなかった）、猶予時間内に再接続（Join）すればタイマーは
+// キャンセルされる。猶予切れの場合の扱いはロールにより異なる
+// （handleReturnTimeout参照: ゲストは個別退出、ホストはセッション終了）。
 func (m *Manager) Disconnect(sessionID, participantID string, conn Conn) {
 	m.mu.Lock()
 	r, ok := m.rooms[sessionID]
@@ -428,17 +509,25 @@ func (m *Manager) Disconnect(sessionID, participantID string, conn Conn) {
 		return // 既に新しいコネクションに置き換わっている場合
 	}
 	delete(r.conns, participantID)
-	displayName := ""
-	var role session.Role
-	if p, ok := r.participants[participantID]; ok {
-		displayName = p.DisplayName
-		role = p.Role
-	}
-
-	if role == session.RoleHost {
+	p, stillPresent := r.participants[participantID]
+	if !stillPresent {
+		// 既に明示的な Leave()（ゲストの「退出する」）等で恒久的に退出済み
+		// （参加者情報自体が消えている）。二重に通知・タイマーを起こす必要は無い。
 		r.mu.Unlock()
-		m.teardown(context.Background(), sessionID, EventSessionEnded, "host_disconnected")
 		return
+	}
+	displayName := p.DisplayName
+
+	// 画面を見ていない間、他参加者の地図に「切断直前の位置」が固まったまま
+	// 残り続けないよう、位置情報共有を一時的にオフ扱いにする（p7残課題の対応、
+	// 新設）。ユーザー自身が明示的にオフへ切り替えていた場合はそのまま(false)で
+	// 変化なし。再接続後、次のlocation_updateが届いた時点でUpdateLocationが
+	// 自動的にtrueへ戻す（本人が引き続き位置情報を共有する意思がある場合のみ、
+	// ブラウザがwatchPositionを送ってくるため）。
+	sharingWasOn := p.LocationSharing
+	if sharingWasOn {
+		p.LocationSharing = false
+		p.Live = nil
 	}
 
 	peers := otherConns(r, participantID)
@@ -451,16 +540,60 @@ func (m *Manager) Disconnect(sessionID, participantID string, conn Conn) {
 	})
 	r.mu.Unlock()
 
+	if sharingWasOn {
+		if err := m.store.UpdateParticipantSharing(context.Background(), participantID, false); err != nil && m.log != nil {
+			m.log.Error("persist location sharing update failed", "session", sessionID, "participant", participantID, "err", err)
+		}
+	}
+
 	msg := participantLeftMsg{Type: EventParticipantLeft, ParticipantID: participantID, DisplayName: displayName}
 	for _, c := range peers {
 		_ = c.Send(msg)
 	}
+	if sharingWasOn {
+		sharingMsg := participantSharingMsg{Type: EventParticipantSharing, ParticipantID: participantID, DisplayName: displayName, Sharing: false}
+		for _, c := range peers {
+			_ = c.Send(sharingMsg)
+		}
+	}
+}
+
+// Leave はゲストの明示的な「退出する」操作（仕様書§14.3ステップ12）を処理する。
+// 復帰猶予（ReturnGracePeriod）を待たず、即座に恒久的な退出として扱う
+// （ユーザー本人が退出の意思を明示しているため、10分待つ理由が無い。
+// p7残課題「共有中にゲストがリロードすると、ホスト側のチャットに
+// 『退出しました』だけが残ってしまう」の対応 — 恒久退出の確定タイミングを
+// removeParticipantに一本化した上で、明示的な退出だけはこの即時経路を通す）。
+// ホストの「共有停止」はEnd()（セッション全体の終了）を使うため、ここでは
+// ゲストのみを対象とし、ホストトークンで呼ばれた場合はErrForbiddenを返す。
+func (m *Manager) Leave(ctx context.Context, sessionID, participantID string) error {
+	m.mu.Lock()
+	r, ok := m.rooms[sessionID]
+	m.mu.Unlock()
+	if !ok {
+		return session.ErrNotFound
+	}
+
+	r.mu.Lock()
+	p, ok := r.participants[participantID]
+	if !ok {
+		r.mu.Unlock()
+		return session.ErrNotFound
+	}
+	if p.Role != session.RoleGuest {
+		r.mu.Unlock()
+		return session.ErrForbidden
+	}
+	r.mu.Unlock()
+
+	m.removeParticipant(ctx, sessionID, participantID)
+	return nil
 }
 
 // handleReturnTimeout は復帰猶予タイマー（ReturnGracePeriod）が発火した際に呼ばれる。
 // タイマー起動後に再接続済み、またはセッションが別経路（手動終了・TTL失効）で
-// 既に片付いている場合は何もしない。ホストの切断はDisconnectで即座に処理
-// されるため（2026-09-02改訂）、このタイマーはゲストの切断からしか発生しない。
+// 既に片付いている場合は何もしない。ホスト・ゲストいずれの切断からも発生する
+// （2026-09-02再改訂）。
 func (m *Manager) handleReturnTimeout(sessionID, participantID string) {
 	m.mu.Lock()
 	r, ok := m.rooms[sessionID]
@@ -472,8 +605,19 @@ func (m *Manager) handleReturnTimeout(sessionID, participantID string) {
 	r.mu.Lock()
 	_, reconnected := r.conns[participantID]
 	_, stillPending := r.returnTimers[participantID]
+	var role session.Role
+	if p, ok := r.participants[participantID]; ok {
+		role = p.Role
+	}
 	r.mu.Unlock()
 	if reconnected || !stillPending {
+		return
+	}
+
+	if role == session.RoleHost {
+		// ホストが10分間画面に復帰しなかった場合、ホスト不在のまま位置共有を
+		// 続ける意味が無いため、セッション全体を終了する。
+		m.teardown(context.Background(), sessionID, EventSessionEnded, "host_disconnected")
 		return
 	}
 
@@ -482,9 +626,15 @@ func (m *Manager) handleReturnTimeout(sessionID, participantID string) {
 	m.removeParticipant(context.Background(), sessionID, participantID)
 }
 
-// removeParticipant はゲスト参加者1人を、復帰猶予切れにより恒久的に退出させる。
-// メモリ・DBの両方から取り除き、以後は同じparticipantIdでJoin（再接続）しても
-// 復帰できないようにする。
+// removeParticipant はゲスト参加者1人を恒久的に退出させる（復帰猶予切れ、
+// または明示的なLeave()経由）。メモリ・DBの両方から取り除き、以後は同じ
+// participantIdでJoin（再接続）しても復帰できないようにする。
+//
+// 恒久退出が確定した時点で初めて EventParticipantDeparted をブロードキャスト
+// し、チャットのアクティビティログ（仕様書§14.5.1）にも「〇〇さんが退出
+// しました」を記録する（p7残課題の対応）。即時のマーカー削除・トースト通知は
+// Disconnect側のEventParticipantLeftが別途担う（復帰猶予中の一時的な切断と、
+// この恒久退出を混同しないための意図的な分離）。
 func (m *Manager) removeParticipant(ctx context.Context, sessionID, participantID string) {
 	m.mu.Lock()
 	r, ok := m.rooms[sessionID]
@@ -494,12 +644,28 @@ func (m *Manager) removeParticipant(ctx context.Context, sessionID, participantI
 	}
 
 	r.mu.Lock()
+	p, ok := r.participants[participantID]
+	if !ok {
+		r.mu.Unlock()
+		return
+	}
+	displayName := p.DisplayName
 	delete(r.participants, participantID)
-	delete(r.returnTimers, participantID)
+	if t, ok := r.returnTimers[participantID]; ok {
+		t.Stop()
+		delete(r.returnTimers, participantID)
+	}
+	appendActivity(r, "left", displayName, "", time.Now().UTC())
+	peers := otherConns(r, participantID)
 	r.mu.Unlock()
 
 	if err := m.store.DeleteParticipant(ctx, participantID); err != nil && m.log != nil {
 		m.log.Error("delete inactive participant failed", "session", sessionID, "participant", participantID, "err", err)
+	}
+
+	msg := participantLeftMsg{Type: EventParticipantDeparted, ParticipantID: participantID, DisplayName: displayName}
+	for _, c := range peers {
+		_ = c.Send(msg)
 	}
 }
 
@@ -530,12 +696,22 @@ func (m *Manager) UpdateLocation(ctx context.Context, sessionID, participantID s
 	}
 
 	arrived := false
+	sharingRestored := false
 	switch kind {
 	case session.KindTarget:
 		r.rec.DestLat, r.rec.DestLng, r.rec.DestAddress, r.rec.DestUpdatedAt = loc.Lat, loc.Lng, address, loc.UpdatedAt
 	case session.KindLive:
 		locCopy := loc
 		self.Live = &locCopy
+		// 位置情報が実際に届いた = 本人が引き続き(または再び)共有する意思がある
+		// ということなので、切断中に自動でオフにされていた場合はオンへ戻す
+		// （p7残課題の対応。ブラウザ側はlocationSharing=falseのときsendせず、
+		// enabled=falseのままwatchPositionを送らないため、location_updateが
+		// 届くこと自体が「共有オン」の信頼できるシグナルになる）。
+		if !self.LocationSharing {
+			self.LocationSharing = true
+			sharingRestored = true
+		}
 		if session.ValidTransportMode(extra.TransportMode) {
 			self.TransportMode = extra.TransportMode
 		}
@@ -547,6 +723,7 @@ func (m *Manager) UpdateLocation(ctx context.Context, sessionID, participantID s
 			now := time.Now().UTC()
 			self.ArrivedAt = &now
 			arrived = true
+			appendActivity(r, "arrived", self.DisplayName, "", now)
 		}
 	}
 	role, displayName, avatarIcon := self.Role, self.DisplayName, self.AvatarIcon
@@ -557,6 +734,16 @@ func (m *Manager) UpdateLocation(ctx context.Context, sessionID, participantID s
 		allConns = allConnsIncludingSelf(r)
 	}
 	r.mu.Unlock()
+
+	if sharingRestored {
+		if err := m.store.UpdateParticipantSharing(ctx, participantID, true); err != nil && m.log != nil {
+			m.log.Error("persist location sharing update failed", "session", sessionID, "participant", participantID, "err", err)
+		}
+		sharingMsg := participantSharingMsg{Type: EventParticipantSharing, ParticipantID: participantID, DisplayName: displayName, Sharing: true}
+		for _, c := range peers {
+			_ = c.Send(sharingMsg)
+		}
+	}
 
 	var persistErr error
 	switch kind {
@@ -675,6 +862,49 @@ func (m *Manager) UpdateTransport(ctx context.Context, sessionID, participantID 
 	return nil
 }
 
+// UpdateLocationSharing は位置情報オフモードの切り替え(新設)を反映する。
+// オフにした場合は既に届いているライブ位置(Live)も破棄する — そうしないと
+// 他参加者の地図上に「最後にオフにした瞬間の位置」が固まったまま残り続けて
+// しまう。オンに戻した場合はLiveはnilのまま(位置はまだ届いていない状態)で、
+// 次にlocation_updateが届いた時点で通常どおりマーカーが復活する。
+func (m *Manager) UpdateLocationSharing(ctx context.Context, sessionID, participantID string, sharing bool) error {
+	m.mu.Lock()
+	r, ok := m.rooms[sessionID]
+	m.mu.Unlock()
+	if !ok {
+		return session.ErrNotFound
+	}
+
+	r.mu.Lock()
+	self, ok := r.participants[participantID]
+	if !ok {
+		r.mu.Unlock()
+		return session.ErrNotFound
+	}
+	self.LocationSharing = sharing
+	if !sharing {
+		self.Live = nil
+	}
+	displayName := self.DisplayName
+	peers := otherConns(r, participantID)
+	r.mu.Unlock()
+
+	if err := m.store.UpdateParticipantSharing(ctx, participantID, sharing); err != nil && m.log != nil {
+		m.log.Error("persist location sharing update failed", "session", sessionID, "participant", participantID, "err", err)
+	}
+
+	msg := participantSharingMsg{
+		Type:          EventParticipantSharing,
+		ParticipantID: participantID,
+		DisplayName:   displayName,
+		Sharing:       sharing,
+	}
+	for _, c := range peers {
+		_ = c.Send(msg)
+	}
+	return nil
+}
+
 // SendExpression は expression メッセージ（仕様書§12.1-④⑤）を処理する。
 // 本人以外の接続中参加者へ peer_expression をブロードキャストするのみで、
 // DBには何も保存しない。
@@ -708,6 +938,10 @@ func (m *Manager) SendExpression(sessionID, participantID, kind, text string) er
 	}
 	r.expressionCooldown[participantID] = time.Now()
 	displayName, avatarIcon := self.DisplayName, self.AvatarIcon
+	sentAt := time.Now().UTC()
+	if kind == "stamp" && strings.TrimSpace(text) != "" {
+		appendActivity(r, "message", displayName, text, sentAt)
+	}
 	peers := otherConns(r, participantID)
 	r.mu.Unlock()
 
@@ -718,7 +952,7 @@ func (m *Manager) SendExpression(sessionID, participantID, kind, text string) er
 		AvatarIcon:    avatarIcon,
 		Kind:          kind,
 		Text:          text,
-		SentAt:        time.Now().UTC(),
+		SentAt:        sentAt,
 	}
 	for _, c := range peers {
 		_ = c.Send(msg)
@@ -794,6 +1028,50 @@ func (m *Manager) End(ctx context.Context, sessionID, token string) error {
 
 	m.teardown(ctx, sessionID, EventSessionEnded, "manual")
 	return nil
+}
+
+// RegenerateTokens はホスト/ゲスト双方のトークンを新しい値へ差し替える
+// (新設)。「招待リンクの代わりに誤ってブラウザのアドレスバーのURL
+// (ホスト自身のトークン入り)を送ってしまった」等、トークン漏えいが疑われる
+// 場合にホストが使う安全弁。ホストトークンのみ受理する。
+//
+// 効果は「以後の新規参加・再接続に古いトークンが使えなくなる」ことに限られる
+// — 既に確立済みのWebSocket接続は、それがホスト本人かどうかを区別する手段が
+// ないため、この呼び出し単体では切断しない。
+func (m *Manager) RegenerateTokens(ctx context.Context, sessionID, token string) (*session.Record, error) {
+	r, err := m.getOrLoad(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	role, ok := r.rec.RoleForToken(token)
+	if !ok {
+		return nil, session.ErrNotFound
+	}
+	if role != session.RoleHost {
+		return nil, session.ErrForbidden
+	}
+
+	newTokenHost, err := session.NewToken()
+	if err != nil {
+		return nil, err
+	}
+	newTokenGuest, err := session.NewToken()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := m.store.RegenerateTokens(ctx, sessionID, newTokenHost, newTokenGuest); err != nil {
+		return nil, err
+	}
+
+	r.rec.TokenHost = newTokenHost
+	r.rec.TokenGuest = newTokenGuest
+	recCopy := *r.rec
+	return &recCopy, nil
 }
 
 // recordFor はメモリ上の room があればそこから、無ければ Postgres から
