@@ -1,6 +1,6 @@
 "use client";
 
-import { Car, Footprints, TrainFront } from "lucide-react";
+import { Car, Footprints } from "lucide-react";
 import { ToggleButton, ToggleButtonGroup } from "@heroui/react";
 import { formatEta } from "@/lib/eta";
 import type { TransportEtaMap } from "@/lib/useTransportEtaOptions";
@@ -17,10 +17,13 @@ interface TransportPickerProps {
   etaByMode?: TransportEtaMap;
 }
 
+// 電車は2026-09-03、ボタンを非表示に変更(ユーザー指示)。NAVITIME単独運用
+// (ジョルダン不採用確定、§7.1.2)で無料枠が月500回のみとなり電車ETAが
+// 単一障害点になったための一時的な措置。バックエンド・型定義側の
+// transportMode="train"自体は残しており、選択肢を出さないだけの変更。
 const OPTIONS: { mode: TransportMode; icon: typeof Footprints; label: string }[] = [
   { mode: "walk", icon: Footprints, label: "徒歩" },
   { mode: "car", icon: Car, label: "車" },
-  { mode: "train", icon: TrainFront, label: "電車" },
 ];
 
 // 表示名・アイコン入力と合わせて移動手段も選んでもらうための共通ピッカー
