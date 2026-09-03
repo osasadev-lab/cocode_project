@@ -61,13 +61,11 @@ func main() {
 		c.String(http.StatusOK, "ok")
 	})
 
-	// 電車ETAプロバイダ: NAVITIME優先、無料枠超過時はジョルダンへ自動フォール
-	// バック(仕様書§7.1〜§7.1.3)。ジョルダンは審査待ちのため、アクセスキー未
-	// 設定の間はConfigured()がfalseを返しRouterから自動的にスキップされる。
+	// 電車ETAプロバイダ: NAVITIME単独運用(仕様書§7.1〜§7.1.3、2026-09-03改訂:
+	// ジョルダンは利用審査不承認により不採用確定)。無料枠超過時はRouter側で
+	// ErrNoProviderAvailableを返す。
 	navitimeClient := transitroute.NewNavitimeClient(cfg.NavitimeAPIKey)
-	stationResolver := transitroute.NewMapTilerStationResolver(cfg.MapTilerKey)
-	jorudanClient := transitroute.NewJorudanClient(cfg.JorudanAccessKey, cfg.JorudanBaseURL, stationResolver)
-	transitRouter := transitroute.NewRouter(navitimeClient, jorudanClient, store, logger)
+	transitRouter := transitroute.NewRouter(navitimeClient, store, logger)
 	api.NewHandler(manager, cfg.PublicBaseURL, cfg.RateLimitRPM, transitRouter, cfg.TransitRateLimitRPM, logger).Register(engine)
 	ws.NewHandler(manager, logger).Register(engine)
 

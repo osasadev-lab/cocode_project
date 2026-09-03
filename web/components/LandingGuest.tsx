@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle, ChevronUp, Map as MapIcon } from "lucide-react";
 import { Alert, Button, Card, Input, Label, Switch } from "@heroui/react";
-import { AdSlot } from "./AdSlot";
 import { AvatarPicker } from "./AvatarPicker";
 import { TransportPicker } from "./TransportPicker";
 import { MapView } from "./MapView";
@@ -258,9 +257,6 @@ export function LandingGuest({ sessionId, token, onJoin }: LandingGuestProps) {
             {error && <p className="text-sm text-danger">{error}</p>}
           </Card>
         )}
-
-        {/* 広告エリア(仕様書§15.1)。パブリッシャーID未設定の間はプレースホルダーのまま。 */}
-        <AdSlot />
       </section>
     </div>
   );

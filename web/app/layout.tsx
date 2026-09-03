@@ -6,7 +6,6 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import "./globals.css";
 import { ServiceWorkerRegister } from "@/components/ServiceWorkerRegister";
 import { MapLibreErrorFilter } from "@/components/MapLibreErrorFilter";
-import { ADSENSE_CLIENT_ID } from "@/lib/config";
 
 // HeroUIのダークモードはOS設定(prefers-color-scheme)ではなく.dark
 // クラス/data-theme属性で切り替わる。既定は引き続きOS設定への自動追従だが、
@@ -73,16 +72,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <Toast.Provider placement="top" />
         <ServiceWorkerRegister />
         <MapLibreErrorFilter />
-        {/* AdSenseローダーはパブリッシャーID設定時のみ読み込む(未設定時は
-            スクリプト自体を配信しない、仕様書§15.1)。 */}
-        {ADSENSE_CLIENT_ID && (
-          <Script
-            async
-            src={`https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${ADSENSE_CLIENT_ID}`}
-            crossOrigin="anonymous"
-            strategy="afterInteractive"
-          />
-        )}
       </body>
     </html>
   );

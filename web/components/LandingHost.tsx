@@ -3,7 +3,6 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { Unlock, Zap, ShieldCheck, MapPin, Menu as MenuIcon } from "lucide-react";
 import { Button, Modal } from "@heroui/react";
-import { AdSlot } from "./AdSlot";
 import { Sidebar, type SidebarModalKind } from "./Sidebar";
 
 // ホスト用トップページ(ランディングページ、仕様書§14.0)。
@@ -15,7 +14,7 @@ import { Sidebar, type SidebarModalKind } from "./Sidebar";
 // 「プライバシーと安全性」「安心のセキュリティ」はヘッダーのハンバーガー
 // メニュー(左サイドバー、Sidebar.tsx)へ移動した。サイドバーには新設の
 // 「サービスについて」、別タブで開く「よくある質問」「プライバシーポリシー」
-// 「利用規約」も並ぶ(AdSense審査対策として実体のあるコンテンツページを用意)。
+// 「利用規約」も並ぶ。
 //
 // 2026-09-02改訂: HeroUIを導入し絵文字を廃止(lucide-reactアイコンへ置き換え)。
 interface LandingHostProps {
@@ -143,9 +142,6 @@ export function LandingHost({ onStart }: LandingHostProps) {
             使い方を見る
           </Button>
         </div>
-
-        {/* 広告エリア(仕様書§15.1)。パブリッシャーID未設定の間はプレースホルダーのまま。 */}
-        <AdSlot />
       </section>
 
       <Sidebar
@@ -218,17 +214,6 @@ export function LandingHost({ onStart }: LandingHostProps) {
                     <p>cocodeとブラウザ間、およびサーバー間の通信は、すべてHTTPS/WSSにより暗号化されています。</p>
                     <p>セッションへのアクセスは、推測困難なトークンを持つ端末のみに制限されており、第三者が総当たりでセッションに侵入することは実質的に困難です。</p>
                     <p>ただし、共有リンク自体を第三者に転送すると、その相手も参加者の位置情報を閲覧できてしまいます。信頼できる相手にのみ共有リンクを送付するようにしてください。</p>
-                  </Modal.Body>
-                </>
-              )}
-              {modal === "ads" && (
-                <>
-                  <Modal.Header>
-                    <Modal.Heading>広告について</Modal.Heading>
-                  </Modal.Header>
-                  <Modal.Body className="flex flex-col gap-3 text-sm text-muted">
-                    <p>cocodeは無料でご利用いただけるサービスです。サーバー運用等の費用の一部として、トップページにGoogle AdSenseによる広告を表示しています。</p>
-                    <p>表示される広告はコンテンツと明確に区別される位置に配置しており、地図・位置情報共有の画面には広告を表示しません。</p>
                   </Modal.Body>
                 </>
               )}

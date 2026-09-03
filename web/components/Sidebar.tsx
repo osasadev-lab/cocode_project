@@ -1,10 +1,9 @@
 "use client";
 
 import { Drawer, ListBox } from "@heroui/react";
-import { BookOpen, Coffee, ExternalLink, FileText, HelpCircle, Info, ClipboardList, Lock, Megaphone, ShieldCheck } from "lucide-react";
-import { BUY_ME_A_COFFEE_URL } from "@/lib/config";
+import { BookOpen, ExternalLink, FileText, HelpCircle, Info, ClipboardList, Lock, ShieldCheck } from "lucide-react";
 
-export type SidebarModalKind = "about" | "how" | "privacy" | "security" | "ads";
+export type SidebarModalKind = "about" | "how" | "privacy" | "security";
 
 interface SidebarProps {
   open: boolean;
@@ -14,7 +13,7 @@ interface SidebarProps {
 
 // ホスト用トップページのハンバーガーメニューから開く左サイドバー(2026-08-31新設)。
 // モーダル表示する項目(サービスについて/使い方/プライバシーと安全性/
-// 安心のセキュリティ/広告について)と、別タブで開く独立ページ
+// 安心のセキュリティ)と、別タブで開く独立ページ
 // (よくある質問/プライバシーポリシー/利用規約)を1つのメニューにまとめる。
 // フィードバックはここではなく、共有終了(SessionEndedScreen)・退出
 // (GuestLeftScreen)の各画面に置く(2026-08-31改訂、体験の直後に案内するため)。
@@ -69,22 +68,6 @@ export function Sidebar({ open, onClose, onOpenModal }: SidebarProps) {
                 利用規約
                 <ExternalLink size={13} className="ml-auto text-muted" aria-hidden />
               </ListBox.Item>
-            </ListBox>
-
-            <hr className="my-2 border-border" />
-
-            <ListBox aria-label="その他" selectionMode="none" className="flex flex-col gap-1 border-none p-0">
-              <ListBox.Item id="ads" onAction={() => onOpenModal("ads")} className="gap-3">
-                <Megaphone size={18} aria-hidden />
-                広告について
-              </ListBox.Item>
-              {BUY_ME_A_COFFEE_URL && (
-                <ListBox.Item href={BUY_ME_A_COFFEE_URL} target="_blank" rel="noreferrer" className="gap-3">
-                  <Coffee size={18} aria-hidden />
-                  開発者を応援する
-                  <ExternalLink size={13} className="ml-auto text-muted" aria-hidden />
-                </ListBox.Item>
-              )}
             </ListBox>
           </Drawer.Dialog>
         </Drawer.Content>

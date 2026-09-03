@@ -15,6 +15,7 @@ web/*.tsbuildinfo
 .env
 .env.*
 !.env.example
+!web/deploy/.env.production.example
 
 # OS
 .DS_Store

@@ -3,7 +3,6 @@
 import { useState } from "react";
 import { Button, Card } from "@heroui/react";
 import { DoorOpen, MessageCircle } from "lucide-react";
-import { AdSlot } from "./AdSlot";
 import { FeedbackModal } from "./FeedbackModal";
 
 interface GuestLeftScreenProps {
@@ -32,7 +31,6 @@ export function GuestLeftScreen({ onBackToTop }: GuestLeftScreenProps) {
             <MessageCircle className="size-4" aria-hidden />
             フィードバックを送る
           </Button>
-          <AdSlot />
         </Card.Content>
       </Card>
 

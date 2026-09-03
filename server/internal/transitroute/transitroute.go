@@ -1,11 +1,10 @@
 // transitroute パッケージは電車モードの経路探索を扱う。NAVITIME乗換検索API
-// (RapidAPI経由)を優先し、月間無料枠(500回)を使い切ったらジョルダン乗換案内
-// オープンAPIへ自動的に切り替える(仕様書§7.1〜§7.1.3)。どちらのプロバイダを
-// 使うかはこのパッケージ内で完結し、呼び出し元(api層)は意識しない。
+// (RapidAPI経由)単独で運用する(仕様書§7.1〜§7.1.3)。
 //
-// 2026-08-30時点、ジョルダンAPIは申請・審査中でアクセスキー未取得のため、
-// 実際に有効化されているのはNAVITIMEのみ。ジョルダンのアクセスキーが発行され
-// 次第、環境変数に設定するだけで自動的に有効化される(コード変更不要)。
+// 2026-09-03: 当初はNAVITIMEの無料枠(月500回)超過時にジョルダン乗換案内
+// オープンAPIへ自動フォールバックする構成を予定していたが、ジョルダン側の
+// 利用審査が不承認となったため不採用が確定し、関連コード(JorudanClient等)
+// は撤去した。無料枠超過時はErrNoProviderAvailableを返す(フォールバック無し)。
 package transitroute
 
 import (
@@ -41,7 +40,7 @@ type Route struct {
 }
 
 // Provider は電車経路探索の外部API実装が満たすインターフェース。
-// NavitimeClient・JorudanClientの両方がこれを実装する。
+// NavitimeClientがこれを実装する。
 type Provider interface {
 	Name() string
 	Configured() bool
@@ -66,64 +65,47 @@ type UsageStore interface {
 }
 
 // NavitimeMonthlyLimit はNAVITIME無料枠（月500回）に対する安全マージン込みの
-// 閾値（仕様書§7.1.2）。この値未満ならNAVITIMEを使い、到達したらジョルダンへ
-// 切り替える。
+// 閾値（仕様書§7.1.2）。この値に到達したら ErrNoProviderAvailable を返す
+// （フォールバック先は無い、2026-09-03改訂: ジョルダン不採用確定）。
 const NavitimeMonthlyLimit = 480
 
-// Router は複数プロバイダを優先順位付きで切り替える（仕様書§7.1.2）。
+// Router はNAVITIMEプロバイダの呼び出しと月次利用回数の管理を担う
+// （仕様書§7.1.2）。
 type Router struct {
 	navitime Provider
-	jorudan  Provider
 	usage    UsageStore
 	log      *slog.Logger
 }
 
-// NewRouter は Router を生成する。navitime/jorudanはnilでもよい
+// NewRouter は Router を生成する。navitimeはnilでもよい
 // （Provider.Configured()がfalseの場合と同様にスキップされる）。
-func NewRouter(navitime, jorudan Provider, usage UsageStore, log *slog.Logger) *Router {
-	return &Router{navitime: navitime, jorudan: jorudan, usage: usage, log: log}
+func NewRouter(navitime Provider, usage UsageStore, log *slog.Logger) *Router {
+	return &Router{navitime: navitime, usage: usage, log: log}
 }
 
-// ComputeRoute はNAVITIME優先、無料枠超過またはエラー時はジョルダンへフォール
-// バックする（仕様書§7.1.2）。プロバイダの切替はレスポンス形状（Route）に一切
-// 影響しない — 呼び出し元には透過的。切替が起きてもユーザーへの通知は行わない
-// （確定、§7.1.2）。
+// ComputeRoute はNAVITIMEの無料枠内であれば経路を取得する。未設定・無料枠
+// 超過の場合は ErrNoProviderAvailable を返す（フォールバック先は無い、
+// 2026-09-03改訂: ジョルダン不採用確定）。
 func (r *Router) ComputeRoute(ctx context.Context, from, to LatLng) (*Route, error) {
+	if r.navitime == nil || !r.navitime.Configured() {
+		return nil, ErrNoProviderAvailable
+	}
+
 	month := time.Now().UTC().Format("2006-01")
-
-	if r.navitime != nil && r.navitime.Configured() {
-		count, err := r.usage.GetUsage(ctx, r.navitime.Name(), month)
-		if err != nil && r.log != nil {
-			r.log.Error("get navitime usage failed", "err", err)
-		}
-		if err == nil && count < NavitimeMonthlyLimit {
-			route, rErr := r.navitime.ComputeRoute(ctx, from, to)
-			if rErr == nil {
-				if _, uErr := r.usage.IncrementUsage(ctx, r.navitime.Name(), month); uErr != nil && r.log != nil {
-					r.log.Error("increment navitime usage failed", "err", uErr)
-				}
-				return route, nil
-			}
-			if errors.Is(rErr, ErrNoRoute) {
-				// 経路が無いのはプロバイダを変えても変わらないため、即座に返す
-				// （フォールバックしても無駄なAPIコールになるだけ）。
-				return nil, rErr
-			}
-			if r.log != nil {
-				r.log.Warn("navitime request failed, falling back to jorudan", "err", rErr)
-			}
-		}
+	count, err := r.usage.GetUsage(ctx, r.navitime.Name(), month)
+	if err != nil && r.log != nil {
+		r.log.Error("get navitime usage failed", "err", err)
+	}
+	if err != nil || count >= NavitimeMonthlyLimit {
+		return nil, ErrNoProviderAvailable
 	}
 
-	if r.jorudan != nil && r.jorudan.Configured() {
-		route, err := r.jorudan.ComputeRoute(ctx, from, to)
-		if err == nil {
-			if _, uErr := r.usage.IncrementUsage(ctx, r.jorudan.Name(), month); uErr != nil && r.log != nil {
-				r.log.Error("increment jorudan usage failed", "err", uErr)
-			}
-		}
-		return route, err
+	route, rErr := r.navitime.ComputeRoute(ctx, from, to)
+	if rErr != nil {
+		return nil, rErr
 	}
-
-	return nil, ErrNoProviderAvailable
+	if _, uErr := r.usage.IncrementUsage(ctx, r.navitime.Name(), month); uErr != nil && r.log != nil {
+		r.log.Error("increment navitime usage failed", "err", uErr)
+	}
+	return route, nil
 }

@@ -65,8 +65,6 @@ export default function PrivacyPage() {
             <li><strong>MapTiler</strong> — 地図タイルの表示、住所検索(ジオコーディング)</li>
             <li><strong>OSRM</strong> — 徒歩・車の経路探索(無料公開デモサーバー)</li>
             <li><strong>NAVITIME</strong> — 電車の経路・所要時間の算出(日本国内のみ)</li>
-            <li><strong>Google AdSense</strong> — 広告の配信。Cookie等を利用して広告のパーソナライズを行う場合があります。詳細は<a href="https://policies.google.com/technologies/partner-sites" target="_blank" rel="noreferrer">Googleのポリシーと規約</a>をご確認ください。</li>
-            <li><strong>Buy Me a Coffee</strong> — 任意の寄付受付(外部サイトへのリンク)</li>
           </ul>
         </section>
 

@@ -3,7 +3,6 @@
 import { useState } from "react";
 import { Button, Card } from "@heroui/react";
 import { Clock, MessageCircle, PartyPopper } from "lucide-react";
-import { AdSlot } from "./AdSlot";
 import { FeedbackModal } from "./FeedbackModal";
 
 interface SessionEndedScreenProps {
@@ -13,10 +12,9 @@ interface SessionEndedScreenProps {
 /**
  * セッション終了後に A が到達する全画面表示（仕様書§5.5/§9）。
  * その時点で地図に表示すべきものが無いため、地図の上のモーダルではなく
- * 専用画面としている。ライブ位置共有画面ではないため、非リアルタイム画面
- * 向けの広告エリア(AdSlot)を置ける(仕様書§15、2026-08-31追加)。
- * フィードバックはここ(共有終了直後)から送れるようにする(仕様書§17.1、
- * 2026-08-31改訂: 汎用メニューからではなく、体験の直後のこのタイミングで案内する)。
+ * 専用画面としている。フィードバックはここ(共有終了直後)から送れるように
+ * する(仕様書§17.1、2026-08-31改訂: 汎用メニューからではなく、体験の直後の
+ * このタイミングで案内する)。
  */
 export function SessionEndedScreen({ reason }: SessionEndedScreenProps) {
   const [feedbackOpen, setFeedbackOpen] = useState(false);
@@ -41,7 +39,6 @@ export function SessionEndedScreen({ reason }: SessionEndedScreenProps) {
             <MessageCircle className="size-4" aria-hidden />
             フィードバックを送る
           </Button>
-          <AdSlot />
         </Card.Content>
       </Card>
 

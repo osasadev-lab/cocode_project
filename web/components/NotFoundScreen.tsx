@@ -1,6 +1,6 @@
 "use client";
 
-import { Card } from "@heroui/react";
+import { Button, Card } from "@heroui/react";
 import { SearchX } from "lucide-react";
 
 /**
@@ -8,6 +8,10 @@ import { SearchX } from "lucide-react";
  * B はそもそも A のセッションに関する詳細を一切知らされていないため
  * （仕様書§8: B が持つのはトークンのみで、セッションのメタ情報は持たない）、
  * 詳しい説明ではなく意図的に単純な404ページとしている。
+ * トップページへ戻る導線が無く抜け出せない不具合の修正(2026-09-03、p8§11)。
+ * SessionEndedScreenと同じくwindow.location.assignで直接遷移する
+ * （復元済みのlocalStorage情報は書き換えず、遷移先のトップページ側の
+ * 判定ロジック(§14.1.2)にそのまま委ねる）。
  */
 export function NotFoundScreen() {
   return (
@@ -17,6 +21,9 @@ export function NotFoundScreen() {
           <SearchX className="size-9 text-muted" aria-hidden />
           <Card.Title>404 — ページが見つかりません</Card.Title>
           <Card.Description>このリンクは無効か、共有がすでに終了しています。</Card.Description>
+          <Button variant="primary" fullWidth onPress={() => window.location.assign("/")}>
+            トップページに戻る
+          </Button>
         </Card.Content>
       </Card>
     </div>

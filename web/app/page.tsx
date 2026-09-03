@@ -71,7 +71,7 @@ function hostSessionUrl(sessionId: string): string {
 // Page: cocode のトップレベルページ。URL とローカル保存されたセッションから
 // 現在の Mode を判定し、対応する画面を表示する。
 export default function Page() {
-  // 2026-08-31改訂(AdSense審査対策の一環): 初期状態を「読み込み中」の
+  // 2026-08-31改訂: 初期状態を「読み込み中」の
   // プレースホルダーではなく、実際のトップページ内容にした。この値は
   // window/localStorageを読まない静的な既定値のため、サーバー側の
   // 静的書き出し(output: "export")時のHTMLとクライアントの初回レンダー
